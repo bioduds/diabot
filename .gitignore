@@ -1,0 +1,17 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+*.egg-info/
+
+# Local user data & secrets (never commit)
+data/*.db
+data/*.db-journal
+data/.fernet_key
+
+# Editor / OS
+.DS_Store
+.vscode/

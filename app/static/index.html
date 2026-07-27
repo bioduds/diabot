@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GlycoGuide — Local T1D CGM Assistant</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="setup-overlay" class="overlay hidden">
+    <div class="modal">
+      <h2>Welcome to GlycoGuide</h2>
+      <p class="disclaimer">
+        GlycoGuide runs a <strong>local LLM</strong> on your machine to help you organize and
+        interpret CGM data, carbs, exercise, weight, and insulin logs.
+        <strong>It is not a doctor</strong> and cannot diagnose, prescribe, or adjust insulin doses.
+        Always follow your diabetes care team for medical decisions.
+      </p>
+      <form id="setup-form">
+        <div class="grid-2">
+          <label>Your name<input name="name" placeholder="Optional" /></label>
+          <label>Glucose unit
+            <select name="glucose_unit">
+              <option value="mg/dL">mg/dL</option>
+              <option value="mmol/L">mmol/L</option>
+            </select>
+          </label>
+        </div>
+        <h3>Insulin regimen</h3>
+        <div class="grid-2">
+          <label>Basal insulin<input name="basal_insulin" placeholder="e.g. Lantus, Tresiba" required /></label>
+          <label>Typical daily basal (units)<input name="basal_units" type="number" step="0.5" min="0" /></label>
+          <label>Bolus insulin<input name="bolus_insulin" placeholder="e.g. Humalog, NovoRapid" required /></label>
+          <label>Insulin-to-carb ratio (g per 1u)<input name="insulin_to_carb_ratio" type="number" step="0.5" min="0" /></label>
+          <label>Correction factor (mg/dL per 1u)<input name="correction_factor" type="number" step="0.5" min="0" /></label>
+          <label>Weight unit
+            <select name="weight_unit">
+              <option value="kg">kg</option>
+              <option value="lb">lb</option>
+            </select>
+          </label>
+        </div>
+        <div class="grid-2">
+          <label>Target low<input name="target_glucose_low" type="number" step="1" placeholder="70" /></label>
+          <label>Target high<input name="target_glucose_high" type="number" step="1" placeholder="180" /></label>
+        </div>
+        <label class="checkbox">
+          <input type="checkbox" name="disclaimer_accepted" required />
+          I understand GlycoGuide is not medical advice and I will consult my care team for dosing decisions.
+        </label>
+        <button type="submit" class="btn primary">Save profile & continue</button>
+      </form>
+    </div>
+  </div>
+
+  <header>
+    <div class="brand">
+      <span class="logo">◉</span>
+      <div>
+        <h1>GlycoGuide</h1>
+        <p>Local LLM · FreeStyle Libre 2 Plus · Type 1 Diabetes</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span id="ollama-status" class="badge">Checking Ollama…</span>
+      <button id="edit-profile-btn" class="btn ghost">Profile</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel reminders" id="reminders-panel">
+      <h2>Reminders</h2>
+      <div id="reminders-list" class="reminders-list"></div>
+    </section>
+
+    <section class="panel stats">
+      <h2>CGM snapshot (24h)</h2>
+      <div class="stats-grid" id="glucose-stats">
+        <div class="stat"><span class="label">Latest</span><span class="value" id="stat-latest">—</span></div>
+        <div class="stat"><span class="label">Average</span><span class="value" id="stat-avg">—</span></div>
+        <div class="stat"><span class="label">Range</span><span class="value" id="stat-range">—</span></div>
+        <div class="stat"><span class="label">Readings</span><span class="value" id="stat-count">—</span></div>
+      </div>
+      <div class="import-row">
+        <div class="librelinkup-box" id="librelinkup-box">
+          <div id="llu-connected" class="hidden">
+            <p class="llu-status">
+              <strong>LibreLinkUp connected</strong>
+              <span id="llu-email" class="muted"></span>
+              <span id="llu-patient" class="muted"></span>
+            </p>
+            <p id="llu-sync-info" class="muted"></p>
+            <div class="llu-actions">
+              <button type="button" id="llu-sync-btn" class="btn secondary">Sync now</button>
+              <button type="button" id="llu-disconnect-btn" class="btn ghost">Disconnect</button>
+            </div>
+          </div>
+          <form id="llu-connect-form" class="llu-form">
+            <h3>LibreLinkUp login</h3>
+            <p class="muted llu-help">
+              Use your LibreLinkUp email and password. In the LibreLink app, share the patient's
+              data with this LibreLinkUp account first.
+            </p>
+            <label>Email<input name="email" type="email" autocomplete="username" required /></label>
+            <label>Password<input name="password" type="password" autocomplete="current-password" required /></label>
+            <label>Region
+              <select name="region">
+                <option value="LA" selected>Latin America (LA)</option>
+                <option value="US">United States (US)</option>
+                <option value="EU">Europe (EU)</option>
+                <option value="EU2">Europe 2 (EU2)</option>
+                <option value="CA">Canada (CA)</option>
+                <option value="AU">Australia (AU)</option>
+                <option value="DE">Germany (DE)</option>
+                <option value="FR">France (FR)</option>
+                <option value="JP">Japan (JP)</option>
+              </select>
+            </label>
+            <button type="submit" class="btn primary">Connect & sync</button>
+            <span id="llu-status" class="muted"></span>
+          </form>
+        </div>
+        <label class="btn secondary">
+          Import LibreLink CSV
+          <input type="file" id="csv-import" accept=".csv" hidden />
+        </label>
+        <span id="import-status" class="muted"></span>
+      </div>
+    </section>
+
+    <section class="panel chat">
+      <h2>Chat with GlycoGuide</h2>
+      <div id="chat-messages" class="chat-messages"></div>
+      <form id="chat-form" class="chat-form">
+        <textarea id="chat-input" rows="2" placeholder="Ask about patterns, log context, or what to track next…"></textarea>
+        <button type="submit" class="btn primary">Send</button>
+      </form>
+    </section>
+
+    <aside class="panel logs">
+      <h2>Quick log</h2>
+      <div class="tabs">
+        <button class="tab active" data-tab="carbs">Carbs</button>
+        <button class="tab" data-tab="exercise">Exercise</button>
+        <button class="tab" data-tab="weight">Weight</button>
+        <button class="tab" data-tab="insulin">Insulin</button>
+      </div>
+
+      <form id="carbs-form" class="log-form tab-panel active" data-panel="carbs">
+        <label>Carbs (grams)<input name="carbs_grams" type="number" step="1" min="0" required /></label>
+        <label>Meal description<input name="meal_description" placeholder="e.g. lunch — pasta" /></label>
+        <label>Bolus units<input name="bolus_units" type="number" step="0.5" min="0" /></label>
+        <label>Notes<textarea name="notes" rows="2"></textarea></label>
+        <button type="submit" class="btn primary">Log carbs</button>
+      </form>
+
+      <form id="exercise-form" class="log-form tab-panel" data-panel="exercise">
+        <label>Activity<input name="activity_type" placeholder="e.g. running, walking" required /></label>
+        <label>Duration (minutes)<input name="duration_minutes" type="number" min="0" /></label>
+        <label>Intensity
+          <select name="intensity">
+            <option value="">—</option>
+            <option value="light">Light</option>
+            <option value="moderate">Moderate</option>
+            <option value="vigorous">Vigorous</option>
+          </select>
+        </label>
+        <label>Notes<textarea name="notes" rows="2"></textarea></label>
+        <button type="submit" class="btn primary">Log exercise</button>
+      </form>
+
+      <form id="weight-form" class="log-form tab-panel" data-panel="weight">
+        <label>Weight<input name="weight" type="number" step="0.1" min="0" required /></label>
+        <label>Unit
+          <select name="unit">
+            <option value="kg">kg</option>
+            <option value="lb">lb</option>
+          </select>
+        </label>
+        <label>Notes<textarea name="notes" rows="2"></textarea></label>
+        <button type="submit" class="btn primary">Log weight</button>
+      </form>
+
+      <form id="insulin-form" class="log-form tab-panel" data-panel="insulin">
+        <label>Insulin type<input name="insulin_type" required /></label>
+        <label>Units<input name="units" type="number" step="0.5" min="0" required /></label>
+        <label>Reason
+          <select name="reason">
+            <option value="">—</option>
+            <option value="meal">Meal bolus</option>
+            <option value="correction">Correction</option>
+            <option value="basal">Basal</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label>Notes<textarea name="notes" rows="2"></textarea></label>
+        <button type="submit" class="btn primary">Log insulin</button>
+      </form>
+
+      <div id="toast" class="toast hidden"></div>
+    </aside>
+  </main>
+
+  <footer>
+    <p>
+      GlycoGuide uses Ollama locally. Not medical advice — work with your endocrinology team for insulin dosing and emergencies.
+    </p>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
