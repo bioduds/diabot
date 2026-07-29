@@ -1,10 +1,17 @@
 import 'dart:convert';
 import 'dart:async';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
 import 'package:llama_cpp_dart/llama_cpp_dart.dart';
 
-void main() {
+import 'login_page.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
   runApp(const DiabotApp());
 }
 
@@ -19,7 +26,27 @@ class DiabotApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.green),
         useMaterial3: true,
       ),
-      home: const ChatPage(),
+      home: const AuthGate(),
+    );
+  }
+}
+
+/// Shows [LoginPage] when signed out, [ChatPage] when signed in.
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        return snapshot.data != null ? const ChatPage() : const LoginPage();
+      },
     );
   }
 }
@@ -167,9 +194,20 @@ class _ChatPageState extends State<ChatPage> {
     // Assume the native llama shared library is available as 'libllama.so' in app
     Llama.libraryPath = 'libllama.so';
 
+    // Our bundled libllama.so is compiled CPU-only (no Vulkan/OpenCL/CUDA
+    // backend). The package's ModelParams() defaults (splitMode = none,
+    // mainGpu = 0) make llama.cpp validate `main_gpu` against the number
+    // of registered GPU devices, which is 0 on a CPU-only build, causing
+    // "invalid value for main_gpu: 0 (available devices: 0)" and an
+    // immediate load failure. Setting mainGpu = -1 and nGpuLayers = 0
+    // makes llama.cpp skip that check and run fully on CPU.
+    final modelParams = ModelParams()
+      ..nGpuLayers = 0
+      ..mainGpu = -1;
+
     final loadCommand = LlamaLoad(
       path: modelPath,
-      modelParams: ModelParams(),
+      modelParams: modelParams,
       contextParams: ContextParams(),
       samplingParams: SamplerParams(),
     );
@@ -198,6 +236,11 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
+  Future<void> _signOut() async {
+    await GoogleSignIn().signOut();
+    await FirebaseAuth.instance.signOut();
+  }
+
   @override
   void dispose() {
     _tokenSub?.cancel();
@@ -216,7 +259,7 @@ class _ChatPageState extends State<ChatPage> {
             icon: const Icon(Icons.cloud_download_outlined),
             onPressed: () async {
               final controller = TextEditingController(
-                  text: '/sdcard/Download/tinyllama-1.1b-chat-v1.0.Q4_0.gguf');
+                  text: '/sdcard/Download/gemma-3-1b-it-Q4_0.gguf');
               final path = await showDialog<String>(
                 context: context,
                 builder: (ctx) => AlertDialog(
@@ -252,6 +295,11 @@ class _ChatPageState extends State<ChatPage> {
             icon: const Icon(Icons.delete_outline),
             onPressed: _messages.isEmpty ? null : _clearConversation,
             tooltip: 'Limpar conversa',
+          ),
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: _signOut,
+            tooltip: 'Sair',
           ),
         ],
       ),
