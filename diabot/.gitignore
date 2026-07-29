@@ -37,6 +37,8 @@ migrate_working_dir/
 assets/models/*.gguf
 assets/models/*.bin
 assets/models/*.onnx
+assets/stt/*.onnx
+assets/stt/*.txt
 
 # Symbolication related
 app.*.symbols

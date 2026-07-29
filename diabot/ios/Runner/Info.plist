@@ -45,5 +45,7 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>O Diabot usa o microfone para você poder falar suas mensagens em vez de digitar.</string>
 </dict>
 </plist>

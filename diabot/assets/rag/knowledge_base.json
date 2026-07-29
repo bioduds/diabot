@@ -1,0 +1,125 @@
+{
+    "version": 1,
+    "chunks": [
+        {
+            "id": "tipos-diabetes-1",
+            "topic": "Tipos de diabetes",
+            "text": "Diabetes tipo 1 é uma condição autoimune em que o pâncreas para de produzir insulina, geralmente diagnosticada na infância ou juventude. Quem tem diabetes tipo 1 precisa de insulina todos os dias para viver, pois o corpo não produz mais esse hormônio."
+        },
+        {
+            "id": "tipos-diabetes-2",
+            "topic": "Tipos de diabetes",
+            "text": "Diabetes tipo 2 acontece quando o corpo produz insulina, mas não consegue usá-la de forma eficiente (resistência à insulina), ou não produz o suficiente. É mais comum em adultos e está associado a fatores como genética, alimentação e atividade física, mas pode acontecer em qualquer pessoa."
+        },
+        {
+            "id": "tipos-diabetes-3",
+            "topic": "Tipos de diabetes",
+            "text": "Diabetes gestacional surge durante a gravidez, quando os hormônios da gestação dificultam a ação da insulina. Geralmente desaparece após o parto, mas aumenta o risco de desenvolver diabetes tipo 2 no futuro, por isso o acompanhamento médico é importante."
+        },
+        {
+            "id": "insulina-basal",
+            "topic": "Insulina",
+            "text": "A insulina basal é aplicada para manter um nível estável de insulina no corpo ao longo do dia e da noite, independente das refeições. Ela simula a produção natural e contínua de insulina que uma pessoa sem diabetes teria."
+        },
+        {
+            "id": "insulina-bolus",
+            "topic": "Insulina",
+            "text": "A insulina bolus (ou de ação rápida) é usada para cobrir as refeições e corrigir glicemias altas. Ela age rapidamente e por um tempo mais curto, ajudando o corpo a processar os carboidratos consumidos."
+        },
+        {
+            "id": "insulina-esquemas",
+            "topic": "Insulina",
+            "text": "Existem diferentes esquemas de tratamento com insulina, como múltiplas aplicações diárias (basal + bolus) ou uso de bomba de insulina. A escolha do esquema é feita junto com a equipe de saúde, considerando rotina, preferências e necessidades de cada pessoa."
+        },
+        {
+            "id": "hipoglicemia-sinais",
+            "topic": "Hipoglicemia",
+            "text": "Hipoglicemia é quando a glicose no sangue fica abaixo do normal, geralmente considerada abaixo de 70 mg/dL. Sinais comuns incluem tremores, suor frio, tontura, confusão mental, fome repentina e irritabilidade. É importante reconhecer esses sinais rapidamente."
+        },
+        {
+            "id": "hipoglicemia-tratamento",
+            "topic": "Hipoglicemia",
+            "text": "O tratamento inicial de uma hipoglicemia costuma seguir a 'regra dos 15': consumir cerca de 15 gramas de carboidrato de ação rápida (como suco ou tabletes de glicose) e verificar a glicemia novamente após 15 minutos, repetindo se necessário. Em caso de dúvida ou hipoglicemia grave, procure orientação médica."
+        },
+        {
+            "id": "hiperglicemia-sinais",
+            "topic": "Hiperglicemia",
+            "text": "Hiperglicemia é quando a glicose no sangue está mais alta do que o desejado. Sinais podem incluir sede excessiva, vontade frequente de urinar, cansaço e visão embaçada. Hiperglicemias frequentes merecem atenção e conversa com a equipe de saúde."
+        },
+        {
+            "id": "contagem-carboidratos",
+            "topic": "Alimentação",
+            "text": "A contagem de carboidratos é uma estratégia usada por muitas pessoas com diabetes para ajustar as doses de insulina de acordo com a quantidade de carboidratos em uma refeição. Aprender a estimar carboidratos em alimentos é uma habilidade que se desenvolve com prática e orientação de um profissional de nutrição."
+        },
+        {
+            "id": "alimentacao-equilibrada",
+            "topic": "Alimentação",
+            "text": "Uma alimentação equilibrada para quem tem diabetes não significa eliminar completamente os carboidratos, mas sim entender como diferentes alimentos afetam a glicemia e fazer escolhas conscientes, com variedade de vegetais, proteínas, gorduras boas e fibras."
+        },
+        {
+            "id": "exercicio-glicemia",
+            "topic": "Exercício físico",
+            "text": "A atividade física pode ajudar a reduzir a glicemia, pois os músculos usam glicose como energia. Por outro lado, exercícios intensos ou prolongados podem aumentar o risco de hipoglicemia, por isso monitorar a glicose antes, durante e depois do exercício é uma boa prática."
+        },
+        {
+            "id": "exercicio-planejamento",
+            "topic": "Exercício físico",
+            "text": "Antes de iniciar uma nova rotina de exercícios, é recomendável conversar com a equipe de saúde para ajustar doses de insulina ou lanches, especialmente em atividades de longa duração ou alta intensidade."
+        },
+        {
+            "id": "dias-doenca",
+            "topic": "Dias de doença",
+            "text": "Em dias de doença (gripes, infecções, febre), o corpo pode precisar de mais insulina, mesmo que a pessoa coma menos. É importante monitorar a glicemia com mais frequência nesses dias e nunca parar a insulina basal sem orientação médica."
+        },
+        {
+            "id": "cgm-monitorizacao",
+            "topic": "Monitorização contínua de glicose",
+            "text": "Sensores de monitorização contínua de glicose (CGM) medem a glicose no líquido intersticial a cada poucos minutos, mostrando tendências e ajudando a identificar padrões de alta ou baixa glicemia ao longo do dia, além de gerar alertas para hipoglicemias e hiperglicemias."
+        },
+        {
+            "id": "cgm-tempo-no-alvo",
+            "topic": "Monitorização contínua de glicose",
+            "text": "O 'tempo no alvo' (time in range) é uma métrica usada com sensores de CGM que indica a porcentagem do tempo em que a glicose fica dentro da faixa considerada ideal, geralmente entre 70 e 180 mg/dL. É um indicador complementar à hemoglobina glicada (HbA1c)."
+        },
+        {
+            "id": "hba1c",
+            "topic": "Exames e acompanhamento",
+            "text": "A hemoglobina glicada (HbA1c) é um exame de sangue que mostra a média da glicemia dos últimos dois a três meses. É um dos principais indicadores usados pela equipe de saúde para avaliar o controle do diabetes ao longo do tempo."
+        },
+        {
+            "id": "consultas-regulares",
+            "topic": "Exames e acompanhamento",
+            "text": "Consultas regulares com endocrinologista, nutricionista e outros profissionais de saúde ajudam a ajustar o tratamento, identificar complicações precocemente e responder dúvidas específicas sobre o dia a dia com diabetes."
+        },
+        {
+            "id": "saude-emocional",
+            "topic": "Saúde emocional",
+            "text": "Viver com diabetes pode gerar cansaço emocional, frustração ou ansiedade, especialmente diante de tantas decisões diárias sobre alimentação, insulina e monitorização. Reconhecer esses sentimentos e buscar apoio (familiar, psicológico ou em grupos) é parte importante do cuidado."
+        },
+        {
+            "id": "autonomia-usuario",
+            "topic": "Saúde emocional",
+            "text": "Com o tempo, muitas pessoas desenvolvem mais confiança e autonomia para tomar decisões sobre o próprio tratamento, mas isso é um processo gradual. Pequenas dúvidas e ajustes fazem parte do aprendizado, e não há problema em pedir ajuda sempre que precisar."
+        },
+        {
+            "id": "viagens-diabetes",
+            "topic": "Rotina e viagens",
+            "text": "Ao viajar, é recomendável levar insulina e suprimentos em quantidade extra, mantê-los na bagagem de mão (evitando temperaturas extremas do bagageiro) e considerar mudanças de fuso horário no horário das aplicações de insulina basal."
+        },
+        {
+            "id": "armazenamento-insulina",
+            "topic": "Rotina e viagens",
+            "text": "A insulina deve ser armazenada na geladeira quando não está em uso (entre 2°C e 8°C) e pode ficar em temperatura ambiente (até cerca de 25-30°C, conforme o fabricante) por um período limitado depois de aberta. Evite deixar insulina exposta a calor excessivo ou congelamento."
+        },
+        {
+            "id": "cetose-alerta",
+            "topic": "Sinais de alerta",
+            "text": "Glicemias muito altas persistentes, especialmente em diabetes tipo 1, podem levar à cetoacidose diabética, uma condição séria que requer atenção médica urgente. Sinais incluem náusea, vômito, respiração rápida, hálito com cheiro de fruta e confusão mental."
+        },
+        {
+            "id": "apoio-familia",
+            "topic": "Saúde emocional",
+            "text": "Explicar aos familiares e amigos próximos como reconhecer sinais de hipoglicemia e o que fazer em uma emergência pode aumentar a segurança da pessoa com diabetes no dia a dia, na escola, no trabalho ou em atividades sociais."
+        }
+    ]
+}
