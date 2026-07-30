@@ -62,6 +62,56 @@ enum EventStatus {
   escalated,
 }
 
+/// Canonical facts that the persisted Mermaid specification must mirror.
+class FsmContract {
+  static const activeStates = [
+    DiabotGlobalState.idle,
+    DiabotGlobalState.parsing,
+    DiabotGlobalState.prioritizing,
+    DiabotGlobalState.waitingInformation,
+    DiabotGlobalState.enrichingContext,
+    DiabotGlobalState.validating,
+    DiabotGlobalState.storing,
+    DiabotGlobalState.clarification,
+    DiabotGlobalState.resuming,
+    DiabotGlobalState.emergency,
+    DiabotGlobalState.education,
+  ];
+
+  static const stubStates = [
+    DiabotGlobalState.learningUser,
+    DiabotGlobalState.onboarding,
+  ];
+
+  static const priority = [
+    EventType.symptoms,
+    EventType.glucose,
+    EventType.insulin,
+    EventType.meal,
+    EventType.exercise,
+    EventType.illness,
+    EventType.ketones,
+    EventType.medication,
+    EventType.cgm,
+    EventType.profile,
+    EventType.question,
+    EventType.unknown,
+  ];
+
+  static const lifecycleEdges = [
+    'queued->waitingInformation',
+    'waitingInformation->validating',
+    'queued->validating',
+    'validating->stored',
+    'validating->discarded',
+    'queued->discarded',
+    'queued->escalated',
+    'waitingInformation->escalated',
+    'escalated->waitingInformation',
+    'escalated->validating',
+  ];
+}
+
 /// One piece of information an event may still be missing, and how to ask
 /// for it. This — plus [eventDefinitions] below — is the ONLY place that
 /// "knows" meals need carbs or hypoglycemia needs a fast-insulin check;
@@ -402,20 +452,6 @@ class EventValidation {
 /// this as a global-state gate (never a stack member); `education` is
 /// `question`'s resolution state (also never a stack member).
 class PriorityEngine {
-  static const List<EventType> _rank = [
-    EventType.symptoms,
-    EventType.glucose,
-    EventType.insulin,
-    EventType.meal,
-    EventType.exercise,
-    EventType.illness,
-    EventType.ketones,
-    EventType.medication,
-    EventType.cgm,
-    EventType.profile,
-    EventType.question,
-  ];
-
   static List<EventInstance> sort(List<EventInstance> stack) {
     final sorted = [...stack];
     sorted.sort((a, b) => _rankOf(a.type).compareTo(_rankOf(b.type)));
@@ -423,8 +459,7 @@ class PriorityEngine {
   }
 
   static int _rankOf(EventType type) {
-    final index = _rank.indexOf(type);
-    return index == -1 ? _rank.length : index; // unknown sorts last
+    return FsmContract.priority.indexOf(type);
   }
 }
 
@@ -462,6 +497,15 @@ class EmergencyAssessment {
 /// weights are a placeholder pending clinical review before real use.
 class EmergencyEngine {
   EmergencyEngine({RecentEventReader? history}) : _history = history;
+
+  static const scoreThreshold = 0.6;
+  static const signals = [
+    'glucose',
+    'symptomType',
+    'recentInsulin',
+    'recentIntenseExercise',
+    'hypoglycemiaUnawareness',
+  ];
 
   final RecentEventReader? _history;
 
@@ -541,7 +585,7 @@ class EmergencyEngine {
     }
 
     return EmergencyAssessment(
-      isEmergency: score >= 0.6,
+      isEmergency: score >= scoreThreshold,
       reason: reasons.join(', '),
       severity: score.clamp(0, 1),
     );

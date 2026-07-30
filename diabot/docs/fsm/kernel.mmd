@@ -1,0 +1,43 @@
+%% fsm-contract: {"activeStates":["idle","parsing","prioritizing","waitingInformation","enrichingContext","validating","storing","clarification","resuming","emergency","education"],"stubStates":["learningUser","onboarding"],"eventTypes":["symptoms","glucose","insulin","meal","exercise","illness","ketones","medication","cgm","profile","question","unknown"],"priority":["symptoms","glucose","insulin","meal","exercise","illness","ketones","medication","cgm","profile","question","unknown"]}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart TD
+  USER[User input] --> RESPOND[ConversationOrchestrator respond]
+  RESPOND --> E{state emergency}
+  E -->|yes| EP[Emergency protocol]
+  EP -->|complete| RESUME[resuming]
+  E -->|no| ED{education awaiting question}
+  ED -->|yes| QUESTION[Create question event]
+  ED -->|no| CTX{enriching context}
+  CTX -->|yes| CONTEXT[Process optional context]
+  CTX -->|no| PENDING{required field pending}
+  PENDING -->|yes| FILL[Fill required field or topic switch]
+  PENDING -->|no| PARSING[parsing]
+  PARSING --> INPUT{deterministic input}
+  INPUT -->|shortcut| STACK[Event stack]
+  INPUT -->|bare number| STACK
+  INPUT -->|free text| PARSER[Optional semantic parser]
+  PARSER --> STACK
+  QUESTION --> STACK
+  RESUME --> STACK
+  CONTEXT --> STACK
+  FILL --> STACK
+
+  STACK --> GATE[Emergency gate]
+  GATE -->|preempt| EMERGENCY[emergency]
+  EMERGENCY --> EP
+  GATE -->|clear| PRIORITIZING[prioritizing]
+  PRIORITIZING --> ACTIVE[Priority selected event]
+  ACTIVE --> KNOWLEDGE[Knowledge engine]
+  KNOWLEDGE -->|missing|required[waitingInformation]
+  required --> USER
+  KNOWLEDGE -->|complete| OPTIONAL[enrichingContext]
+  OPTIONAL -->|skip or complete| VALIDATING[validating]
+  VALIDATING -->|invalid| CLARIFICATION[clarification]
+  CLARIFICATION --> USER
+  VALIDATING -->|valid| STORING[storing]
+  STORING --> IDLE[idle]
+  IDLE --> NEXT[Suggested next actions]
+  NEXT --> USER
+
+  STUB1[learningUser - declared stub]
+  STUB2[onboarding - declared stub]

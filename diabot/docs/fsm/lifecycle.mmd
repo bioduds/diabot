@@ -1,0 +1,16 @@
+%% fsm-contract: {"lifecycleEdges":["queued->waitingInformation","waitingInformation->validating","queued->validating","validating->stored","validating->discarded","queued->discarded","queued->escalated","waitingInformation->escalated","escalated->waitingInformation","escalated->validating"]}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+stateDiagram-v2
+  [*] --> queued
+  queued --> waitingInformation: missing required field
+  waitingInformation --> validating: final field received
+  queued --> validating: already complete
+  validating --> stored: structural validation passed
+  validating --> discarded: structural validation failed
+  queued --> discarded: unknown parser result
+  queued --> escalated: emergency preemption
+  waitingInformation --> escalated: emergency preemption
+  escalated --> waitingInformation: resume pending field
+  escalated --> validating: resume complete event
+  stored --> [*]
+  discarded --> [*]

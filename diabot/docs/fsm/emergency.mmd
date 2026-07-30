@@ -1,0 +1,15 @@
+%% fsm-contract: {"precedence":"emergency-before-priority","signals":["glucose","symptomType","recentInsulin","recentIntenseExercise","hypoglycemiaUnawareness"],"threshold":0.6,"resume":"preserve-event-stack"}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  STACK[Event stack] --> ASSESS[EmergencyEngine assess]
+  GLUCOSE[Glucose] --> ASSESS
+  SYMPTOMS[Symptom type] --> ASSESS
+  INSULIN[Recent insulin] --> ASSESS
+  EXERCISE[Recent intense exercise] --> ASSESS
+  UNAWARE[Hypoglycemia unawareness] --> ASSESS
+  ASSESS --> SCORE{Score at least 0.6}
+  SCORE -->|yes| MARK[Mark pending events escalated]
+  MARK --> EMERGENCY[Emergency protocol]
+  EMERGENCY --> STORE[Store emergency system event]
+  STORE --> RESUME[Resume preserved event stack]
+  SCORE -->|no| PRIORITY[Priority engine]

@@ -99,6 +99,7 @@ Diabot does **not** require Ollama.
 cd diabot
 flutter pub get
 flutter test test/orchestrator_test.dart
+flutter test test/fsm_mermaid_contract_test.dart
 flutter run
 ```
 
@@ -115,6 +116,10 @@ input -> deterministic shortcut or semantic extraction -> event stack
 ```
 
 Each event has an ID, source, lifecycle status, and audit trail. A completed event is stored; an invalid or unrecognized event is discarded with a reason; events that trigger emergency pre-emption are retained and resumed afterward. SQLite is accessed through the storage gateway rather than directly by the knowledge or priority engines.
+
+The persisted Mermaid specifications live in [diabot/docs/fsm](diabot/docs/fsm). Each map contains a machine-readable contract checked against the Dart FSM declarations by `flutter test test/fsm_mermaid_contract_test.dart`. This verifies the declared states, event types, priority, lifecycle edges, and emergency contract, rather than attempting to infer arbitrary diagram layout.
+
+For an implementation handoff, run `cd diabot && docs/create_fsm_handoff_zip.sh`. It produces [diabot/docs/zip/diabot-fsm-handoff.zip](diabot/docs/zip/diabot-fsm-handoff.zip) with the diagrams, implementation references, and tests required to understand and verify the FSM.
 
 ## Repository layout
 
