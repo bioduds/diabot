@@ -1,0 +1,29 @@
+%% fsm-contract: {"windows":[{"name":"last15Minutes","minutes":15},{"name":"last1Hour","minutes":60},{"name":"last4Hours","minutes":240},{"name":"last12Hours","minutes":720},{"name":"last24Hours","minutes":1440}],"eventTypes":["meal","exercise","insulin","symptoms","glucose"],"consumers":["emergency","priority","knowledge"],"timestamp":"createdAt","globalStateChange":false,"lifecycleChange":false}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  STACK[Current event stack] --> TIME[TimeEngine buildContext]
+  HISTORY[Timestamped stored events] --> TIME
+
+  TIME --> NOW[Now]
+  TIME --> W15[Last 15 minutes]
+  TIME --> W1[Last 1 hour]
+  TIME --> W4[Last 4 hours]
+  TIME --> W12[Last 12 hours]
+  TIME --> W24[Last 24 hours]
+
+  NOW --> CONTEXT[TemporalContext]
+  W15 --> CONTEXT
+  W1 --> CONTEXT
+  W4 --> CONTEXT
+  W12 --> CONTEXT
+  W24 --> CONTEXT
+
+  CONTEXT --> EMERGENCY[EmergencyEngine]
+  CONTEXT --> PRIORITY[PriorityEngine]
+  CONTEXT --> KNOWLEDGE[KnowledgeEngine]
+
+  EMERGENCY --> GATE[Emergency gate]
+  PRIORITY --> RESOLUTION[Priority-selected event]
+  KNOWLEDGE --> MISSING[Missing information or next action]
+
+  NOTE[No new DiabotGlobalState or EventStatus]

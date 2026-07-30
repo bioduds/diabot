@@ -9,14 +9,27 @@ archive="$output_dir/diabot-fsm-handoff.zip"
 
 files=(
   README.md
-  docs/fsm/kernel.mmd
-  docs/fsm/lifecycle.mmd
-  docs/fsm/emergency.mmd
   lib/events.dart
+  lib/initialization.dart
   lib/orchestrator.dart
+  lib/time_engine.dart
   test/fsm_mermaid_contract_test.dart
+  test/initialization_test.dart
   test/orchestrator_test.dart
+  test/time_engine_test.dart
 )
+
+fsm_files=()
+while IFS= read -r file; do
+  fsm_files+=("${file#"$diabot_dir"/}")
+done < <(find "$diabot_dir/docs/fsm" -type f -print | sort)
+
+if [[ ${#fsm_files[@]} -eq 0 ]]; then
+  echo "No FSM modules found in docs/fsm." >&2
+  exit 1
+fi
+
+files+=("${fsm_files[@]}")
 
 command -v zip >/dev/null || {
   echo "The 'zip' command is required to create the FSM handoff archive." >&2

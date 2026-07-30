@@ -2,6 +2,7 @@
 %% This contract is checked by test/fsm_mermaid_contract_test.dart.
 flowchart LR
   STACK[Event stack] --> ASSESS[EmergencyEngine assess]
+  TIME[TemporalContext] --> ASSESS
   GLUCOSE[Glucose] --> ASSESS
   SYMPTOMS[Symptom type] --> ASSESS
   INSULIN[Recent insulin] --> ASSESS

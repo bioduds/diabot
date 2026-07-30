@@ -123,11 +123,11 @@ class OnboardingQuestion {
   });
 }
 
-/// Fixed, ordered list of onboarding questions asked on first login
+/// Fixed, ordered profile fields collected by the FSM initialization module
 /// (confirmed field set: idioma, nome, peso, tipo de diabetes, tempo de
 /// diagnóstico, insulinas utilizadas). `idioma` and `nome` are normally
-/// auto-filled (device locale / Google account) and skipped; see
-/// `OnboardingPage._prefillKnownFieldsAndStart`.
+/// auto-filled (device locale / Google account) and skipped by
+/// [InitializationModule].
 final List<OnboardingQuestion> onboardingQuestions = [
   OnboardingQuestion(
     field: 'idioma',

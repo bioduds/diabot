@@ -8,27 +8,25 @@ import 'package:record/record.dart';
 import 'stt.dart';
 import 'user_profile.dart';
 
-/// A simple scripted-question onboarding flow, reusing the same chat-bubble
-/// UI style as [ChatPage]. Each question maps 1:1 to a [UserProfile] field
-/// and answers are stored directly (no LLM parsing involved), for
-/// reliability with a small 1B model.
+/// Profile editor reusing the chat-bubble UI style. First-login onboarding
+/// runs only through the FSM initialization module in `initialization.dart`.
 ///
 /// When [existingProfile] is provided, the flow starts pre-filled with the
 /// current answers so it can be reused as an "Editar perfil" screen.
-class OnboardingPage extends StatefulWidget {
+class ProfileEditorPage extends StatefulWidget {
   final UserProfile? existingProfile;
 
   /// Called with the saved profile once all questions are answered.
   final void Function(UserProfile) onDone;
 
-  const OnboardingPage({
+  const ProfileEditorPage({
     super.key,
     this.existingProfile,
     required this.onDone,
   });
 
   @override
-  State<OnboardingPage> createState() => _OnboardingPageState();
+  State<ProfileEditorPage> createState() => _OnboardingPageState();
 }
 
 class _OnboardingBubble {
@@ -38,7 +36,7 @@ class _OnboardingBubble {
   _OnboardingBubble(this.isBot, this.text);
 }
 
-class _OnboardingPageState extends State<OnboardingPage> {
+class _OnboardingPageState extends State<ProfileEditorPage> {
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final List<_OnboardingBubble> _bubbles = [];

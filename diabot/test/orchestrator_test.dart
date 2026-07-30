@@ -1,6 +1,10 @@
 import 'package:diabot/events.dart';
+import 'package:diabot/initialization.dart';
 import 'package:diabot/orchestrator.dart';
+import 'package:diabot/time_engine.dart';
+import 'package:diabot/user_profile.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class _MemoryGateway implements FsmStoreGateway {
   final events = <EventInstance>[];
@@ -20,7 +24,40 @@ class _MemoryGateway implements FsmStoreGateway {
   Future<void> storeSystemEvent(String type, Map<String, dynamic> data) async {}
 }
 
+class _TemporalProvider implements TemporalContextProvider {
+  @override
+  Future<TemporalContext> buildContext(List<EventInstance> stack) async {
+    final now = DateTime.now();
+    return TemporalSnapshot(
+      referenceTime: now,
+      events: [
+        ...stack.map((event) => TemporalEvent(
+              type: event.type,
+              data: event.data,
+              createdAt: event.createdAt,
+            )),
+        TemporalEvent(
+          type: EventType.insulin,
+          data: const {'dose': 20},
+          createdAt: now.subtract(const Duration(minutes: 40)),
+        ),
+        TemporalEvent(
+          type: EventType.exercise,
+          data: const {'intensity': 'intensa'},
+          createdAt: now.subtract(const Duration(minutes: 30)),
+        ),
+      ],
+    );
+  }
+}
+
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   test('quick reply reaches the FSM without an LLM parser', () async {
     final orchestrator = ConversationOrchestrator();
 
@@ -28,6 +65,27 @@ void main() {
 
     expect(reply.text, contains('gramas de carboidratos'));
     expect(reply.quickReplies, ['Sim, sei', 'Não sei']);
+  });
+
+  test('onboarding is an FSM entry point that exits after saving profile', () async {
+    final orchestrator = ConversationOrchestrator(
+      initializationModule: InitializationModule(),
+    );
+
+    final first = await orchestrator.beginOnboarding(
+      profile: UserProfile(),
+      deviceLanguage: 'pt',
+      accountDisplayName: 'Ana',
+    );
+    await orchestrator.respond('70 kg', null);
+    await orchestrator.respond('Tipo 1', null);
+    await orchestrator.respond('3 anos', null);
+    final completed = await orchestrator.respond('Fiasp', null);
+
+    expect(first.text, contains('peso atual'));
+    expect(orchestrator.state, DiabotGlobalState.idle);
+    expect(completed.text, contains('Perfil inicial salvo'));
+    expect(completed.quickReplies, contains('Registrar glicemia'));
   });
 
   test('bare glucose value reaches the FSM without an LLM parser', () async {
@@ -88,6 +146,20 @@ void main() {
       gateway.transitions.map((transition) => transition.to),
       contains(EventStatus.escalated),
     );
+  });
+
+  test('emergency reply makes temporal context visible', () async {
+    final orchestrator = ConversationOrchestrator(
+      emergencyEngine: EmergencyEngine(
+        temporalContextProvider: _TemporalProvider(),
+      ),
+    );
+
+    final reply = await orchestrator.respond('77', null);
+
+    expect(reply.text, contains('contexto temporal local'));
+    expect(reply.text, contains('insulina rápida recente'));
+    expect(reply.text, contains('exercício intenso recente'));
   });
 
   test('optional event context is retained before storage', () async {

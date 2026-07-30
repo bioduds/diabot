@@ -13,13 +13,13 @@ flutter test test/fsm_mermaid_contract_test.dart
 flutter run
 ```
 
-Diabot does not use Ollama. To enable free-text semantic extraction, manually copy a compatible GGUF to Android device storage (default: `/sdcard/Download/gemma-3-4b-Q4_0.gguf`), grant **All files access**, then initialize it from the cloud icon in the app.
+Diabot does not use Ollama. To enable free-text semantic extraction, manually copy a compatible GGUF to Android device storage (default: `/sdcard/Download/gemma-3-4b-Q4_0.gguf`) and grant **All files access**. After login, Diabot loads the GGUF automatically before starting the chat or first-login onboarding, with a retry screen when either prerequisite is unavailable.
 
 Without the external model, quick replies and bare numeric glucose entries remain available through the deterministic FSM.
 
 ## FSM specification
 
-The persisted FSM maps are [docs/fsm/kernel.mmd](docs/fsm/kernel.mmd), [docs/fsm/lifecycle.mmd](docs/fsm/lifecycle.mmd), and [docs/fsm/emergency.mmd](docs/fsm/emergency.mmd). Mermaid ignores their `%% fsm-contract` JSON headers; the verifier reads those headers and checks them against the canonical Dart contract in [lib/events.dart](lib/events.dart).
+The persisted FSM maps are [docs/fsm/kernel.mmd](docs/fsm/kernel.mmd), [docs/fsm/lifecycle.mmd](docs/fsm/lifecycle.mmd), [docs/fsm/emergency.mmd](docs/fsm/emergency.mmd), [docs/fsm/time_engine.mmd](docs/fsm/time_engine.mmd), and [docs/fsm/initialization.mmd](docs/fsm/initialization.mmd). Mermaid ignores their `%% fsm-contract` JSON headers; the verifier reads those headers and checks them against the canonical Dart contract in [lib/events.dart](lib/events.dart).
 
 Run the drift check with:
 
@@ -28,6 +28,10 @@ flutter test test/fsm_mermaid_contract_test.dart
 ```
 
 It verifies declared states, event types, ordering, auditable lifecycle edges, and emergency signals/threshold. It does not prove arbitrary Mermaid layout or every control-flow branch; changes to the FSM contract must update the code and the relevant `.mmd` file together.
+
+The Time Engine in [lib/time_engine.dart](lib/time_engine.dart) produces timestamp-based context from the current event stack and the last 24 hours of local event history. Its initial emergency rule composes low-normal glucose, recent insulin, and recent intense exercise. Reported event times remain free-text context until a future Mermaid-defined module normalizes them; no new global state or event lifecycle is introduced.
+
+The first-login [lib/initialization.dart](lib/initialization.dart) module is entered through the active `onboarding` global state after the external model is ready. It saves the local profile on completion and does not run again while that profile exists.
 
 ### Evolving the FSM
 

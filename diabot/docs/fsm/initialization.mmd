@@ -1,0 +1,20 @@
+%% fsm-contract: {"entryState":"onboarding","exitState":"idle","profileFields":["idioma","nome","peso","tipoDiabetes","tempoDiagnostico","insulinas"],"persistence":"local-profile-on-complete","reentry":"saved-profile-skips-onboarding","modelGate":"model-ready-before-onboarding","modelFailure":"wait-and-retry","eventLifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"knowledgeImpact":false}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart TD
+  AUTH[Authenticated user] --> LOAD[Automatically load local model]
+  LOAD --> READY{Model ready}
+  READY -->|no| RETRY[Wait and retry]
+  RETRY --> LOAD
+  READY -->|yes| PROFILE{Saved local profile}
+  PROFILE -->|missing| ENTRY[onboarding]
+  PROFILE -->|present| IDLE[idle]
+
+  ENTRY --> PREFILL[Prefill device language and account name]
+  PREFILL --> FIELD[Ask next missing profile field]
+  FIELD --> ANSWER[User answer]
+  ANSWER --> MORE{More fields missing}
+  MORE -->|yes| FIELD
+  MORE -->|no| SAVE[Save UserProfile locally]
+  SAVE --> IDLE
+
+  NOTE[No EventType or EventStatus transition]

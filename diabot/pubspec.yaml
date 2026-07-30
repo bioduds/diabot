@@ -6,7 +6,7 @@ publish_to: none
 # against the last one it saw (stored in SharedPreferences) and, if it
 # changed, wipes all local app data (Firebase session + saved profile) so
 # each fresh test install starts from a clean login/onboarding flow.
-version: 0.1.0+18
+version: 0.1.0+22
 
 environment:
   sdk: ">=3.4.0 <4.0.0"

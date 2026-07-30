@@ -1,5 +1,7 @@
 import 'events.dart';
+import 'initialization.dart';
 import 'nlu.dart';
+import 'user_profile.dart';
 
 /// A single response from [ConversationOrchestrator]: fixed, human-authored
 /// text (never LLM free-text, except the one FSM-approved exception in
@@ -38,11 +40,14 @@ class ConversationOrchestrator {
   ConversationOrchestrator({
     this.storeGateway,
     this.onEducationRequest,
+    InitializationModule? initializationModule,
     EmergencyEngine? emergencyEngine,
-  }) : _emergencyEngine = emergencyEngine ?? EmergencyEngine();
+  })  : _initializationModule = initializationModule ?? InitializationModule(),
+        _emergencyEngine = emergencyEngine ?? EmergencyEngine();
 
   final FsmStoreGateway? storeGateway;
   final EducationAnswer? onEducationRequest;
+  final InitializationModule _initializationModule;
   final EmergencyEngine _emergencyEngine;
 
   static const Map<String, EventType> _clarificationShortcuts = {
@@ -78,12 +83,33 @@ class ConversationOrchestrator {
 
   DiabotGlobalState get state => _state;
 
+  /// Starts the first-login profile collection after the local model is
+  /// ready. The caller is responsible for only invoking it when no saved
+  /// profile exists.
+  Future<OrchestratorReply> beginOnboarding({
+    required UserProfile profile,
+    required String deviceLanguage,
+    String? accountDisplayName,
+  }) async {
+    _state = DiabotGlobalState.onboarding;
+    final reply = await _initializationModule.begin(
+      profile: profile,
+      deviceLanguage: deviceLanguage,
+      accountDisplayName: accountDisplayName,
+    );
+    return _onboardingReply(reply);
+  }
+
   /// Entry point for a new piece of user input (typed, transcribed, or a
   /// tapped quick-reply label / numeric entry — all treated the same way).
   Future<OrchestratorReply> respond(
     String rawText,
     IntentClassifier? classifier,
   ) async {
+    if (_state == DiabotGlobalState.onboarding) {
+      return _onboardingReply(await _initializationModule.respond(rawText));
+    }
+
     if (_state == DiabotGlobalState.emergency) {
       if (_tryFillEmergencyField(rawText)) return _resolveStack();
       return OrchestratorReply(
@@ -127,6 +153,13 @@ class ConversationOrchestrator {
       return const OrchestratorReply('Qual é sua dúvida?');
     }
     return _resolveStack();
+  }
+
+  OrchestratorReply _onboardingReply(InitializationReply reply) {
+    if (_initializationModule.isComplete) {
+      _state = DiabotGlobalState.idle;
+    }
+    return OrchestratorReply(reply.text, quickReplies: reply.quickReplies);
   }
 
   Future<void> _parseAndPushEvents(
@@ -214,7 +247,7 @@ class ConversationOrchestrator {
       _emergencyData.clear();
       final reply = await _resolveEmergency();
       return OrchestratorReply(
-        '${_emergencyIntro(assessment.reason)}\n\n${reply.text}',
+        '${_emergencyIntro(assessment.reason, assessment.usedTemporalContext)}\n\n${reply.text}',
         quickReplies: reply.quickReplies,
         numericInputHint: reply.numericInputHint,
       );
@@ -353,10 +386,13 @@ class ConversationOrchestrator {
 
   // --- Emergency global state -----------------------------------------
 
-  String _emergencyIntro(String reason) {
+  String _emergencyIntro(String reason, bool usedTemporalContext) {
     final reasonText = reason.isEmpty ? '' : ' ($reason)';
-    return 'Percebi sinais que podem indicar uma emergência$reasonText. Vou '
-        'fazer perguntas rápidas para te orientar.';
+    final temporalText = usedTemporalContext
+        ? ' Considerei também o contexto temporal local dos eventos recentes.'
+        : '';
+    return 'Percebi sinais que podem indicar uma emergência$reasonText.'
+        '$temporalText Vou fazer perguntas rápidas para te orientar.';
   }
 
   FieldSpec? _currentEmergencyQuestion() {

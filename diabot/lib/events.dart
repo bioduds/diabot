@@ -75,13 +75,26 @@ class FsmContract {
     DiabotGlobalState.clarification,
     DiabotGlobalState.resuming,
     DiabotGlobalState.emergency,
+    DiabotGlobalState.onboarding,
     DiabotGlobalState.education,
   ];
 
   static const stubStates = [
     DiabotGlobalState.learningUser,
-    DiabotGlobalState.onboarding,
   ];
+
+  static const initializationProfileFields = [
+    'idioma',
+    'nome',
+    'peso',
+    'tipoDiabetes',
+    'tempoDiagnostico',
+    'insulinas',
+  ];
+  static const initializationEntryState = DiabotGlobalState.onboarding;
+  static const initializationExitState = DiabotGlobalState.idle;
+  static const initializationModelGate = 'model-ready-before-onboarding';
+  static const initializationModelFailure = 'wait-and-retry';
 
   static const priority = [
     EventType.symptoms,
@@ -110,6 +123,27 @@ class FsmContract {
     'escalated->waitingInformation',
     'escalated->validating',
   ];
+
+  static const temporalWindows = {
+    'last15Minutes': 15,
+    'last1Hour': 60,
+    'last4Hours': 240,
+    'last12Hours': 720,
+    'last24Hours': 1440,
+  };
+
+  static const temporalEventTypes = [
+    EventType.meal,
+    EventType.exercise,
+    EventType.insulin,
+    EventType.symptoms,
+    EventType.glucose,
+  ];
+
+  static const temporalConsumers = ['emergency', 'priority', 'knowledge'];
+  static const temporalTimestamp = 'createdAt';
+  static const timeEngineChangesGlobalState = false;
+  static const timeEngineChangesLifecycle = false;
 }
 
 /// One piece of information an event may still be missing, and how to ask
@@ -211,6 +245,24 @@ abstract interface class RecentEventReader {
     String type,
     Duration within,
   );
+}
+
+/// Read-only temporal facts derived from the current stack and stored events.
+abstract interface class TemporalContext {
+  int count(EventType type, Duration within);
+  bool has(EventType type, Duration within);
+  bool hasFieldValue(
+    EventType type,
+    String field,
+    Object value,
+    Duration within,
+  );
+}
+
+/// Builds a [TemporalContext] once per FSM turn without coupling engines to
+/// a storage implementation.
+abstract interface class TemporalContextProvider {
+  Future<TemporalContext> buildContext(List<EventInstance> stack);
 }
 
 /// The only boundary through which the FSM persists data or its audit log.
@@ -482,11 +534,17 @@ class EmergencyContext {
 }
 
 class EmergencyAssessment {
-  const EmergencyAssessment({required this.isEmergency, required this.reason, required this.severity});
+  const EmergencyAssessment({
+    required this.isEmergency,
+    required this.reason,
+    required this.severity,
+    this.usedTemporalContext = false,
+  });
 
   final bool isEmergency;
   final String reason;
   final double severity;
+  final bool usedTemporalContext;
 
   static const none = EmergencyAssessment(isEmergency: false, reason: '', severity: 0);
 }
@@ -496,7 +554,11 @@ class EmergencyAssessment {
 /// multi-signal score — NOT a fixed "<70 = emergency" rule — and its
 /// weights are a placeholder pending clinical review before real use.
 class EmergencyEngine {
-  EmergencyEngine({RecentEventReader? history}) : _history = history;
+  EmergencyEngine({
+    RecentEventReader? history,
+    TemporalContextProvider? temporalContextProvider,
+  })  : _history = history,
+        _temporalContextProvider = temporalContextProvider;
 
   static const scoreThreshold = 0.6;
   static const signals = [
@@ -508,6 +570,7 @@ class EmergencyEngine {
   ];
 
   final RecentEventReader? _history;
+  final TemporalContextProvider? _temporalContextProvider;
 
   Future<EmergencyAssessment> assess(List<EventInstance> stack) async {
     double? glucose;
@@ -522,27 +585,43 @@ class EmergencyEngine {
       }
     }
 
+    final temporalContext = await _temporalContextProvider?.buildContext(stack);
     final history = _history;
-    final recentInsulin = history == null
-      ? const <Map<String, dynamic>>[]
-      : await history.recentEventsOfType('insulin', const Duration(hours: 2));
-    final recentExercise = history == null
-      ? const <Map<String, dynamic>>[]
-      : await history.recentEventsOfType('exercise', const Duration(hours: 2));
+    final recentInsulin = temporalContext == null && history != null
+        ? await history.recentEventsOfType('insulin', const Duration(hours: 4))
+        : const <Map<String, dynamic>>[];
+    final recentExercise = temporalContext == null && history != null
+        ? await history.recentEventsOfType('exercise', const Duration(hours: 4))
+        : const <Map<String, dynamic>>[];
+    final recentFastActingInsulin = temporalContext?.has(
+          EventType.insulin,
+          const Duration(hours: 4),
+        ) ??
+        recentInsulin.isNotEmpty;
+    final recentIntenseExercise = temporalContext?.hasFieldValue(
+          EventType.exercise,
+          'intensity',
+          'intensa',
+          const Duration(hours: 4),
+        ) ??
+        recentExercise.any((row) {
+          final payload = jsonDecode(row['payload'] as String) as Map<String, dynamic>;
+          return payload['intensity'] == 'intensa';
+        });
 
     final context = EmergencyContext(
       currentGlucose: glucose,
       activeSymptomType: symptomType,
-      recentFastActingInsulin: recentInsulin.isNotEmpty,
-      recentIntenseExercise: recentExercise.any((row) {
-        final payload = jsonDecode(row['payload'] as String) as Map<String, dynamic>;
-        return payload['intensity'] == 'intensa';
-      }),
+      recentFastActingInsulin: recentFastActingInsulin,
+      recentIntenseExercise: recentIntenseExercise,
     );
-    return _score(context);
+    return _score(context, usedTemporalContext: temporalContext != null);
   }
 
-  EmergencyAssessment _score(EmergencyContext ctx) {
+  EmergencyAssessment _score(
+    EmergencyContext ctx, {
+    required bool usedTemporalContext,
+  }) {
     double score = 0;
     final reasons = <String>[];
 
@@ -554,6 +633,9 @@ class EmergencyEngine {
       } else if (glucose < 70) {
         score += 0.3;
         reasons.add('glicemia baixa');
+      } else if (glucose < 90) {
+        score += 0.2;
+        reasons.add('glicemia em faixa de atenção');
       } else if (glucose > 300) {
         score += 0.5;
         reasons.add('glicemia muito alta');
@@ -571,8 +653,9 @@ class EmergencyEngine {
       reasons.add('sintomas de hiperglicemia');
     }
 
-    if (ctx.recentFastActingInsulin && ctx.activeSymptomType == 'hypo') {
-      score += 0.2;
+    if (ctx.recentFastActingInsulin &&
+        (ctx.activeSymptomType == 'hypo' || (glucose ?? 999) < 90)) {
+      score += 0.25;
       reasons.add('insulina rápida recente');
     }
     if (ctx.recentIntenseExercise && (glucose ?? 999) < 100) {
@@ -588,6 +671,7 @@ class EmergencyEngine {
       isEmergency: score >= scoreThreshold,
       reason: reasons.join(', '),
       severity: score.clamp(0, 1),
+      usedTemporalContext: usedTemporalContext,
     );
   }
 }

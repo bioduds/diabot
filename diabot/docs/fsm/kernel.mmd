@@ -1,6 +1,16 @@
-%% fsm-contract: {"activeStates":["idle","parsing","prioritizing","waitingInformation","enrichingContext","validating","storing","clarification","resuming","emergency","education"],"stubStates":["learningUser","onboarding"],"eventTypes":["symptoms","glucose","insulin","meal","exercise","illness","ketones","medication","cgm","profile","question","unknown"],"priority":["symptoms","glucose","insulin","meal","exercise","illness","ketones","medication","cgm","profile","question","unknown"]}
+%% fsm-contract: {"activeStates":["idle","parsing","prioritizing","waitingInformation","enrichingContext","validating","storing","clarification","resuming","emergency","onboarding","education"],"stubStates":["learningUser"],"eventTypes":["symptoms","glucose","insulin","meal","exercise","illness","ketones","medication","cgm","profile","question","unknown"],"priority":["symptoms","glucose","insulin","meal","exercise","illness","ketones","medication","cgm","profile","question","unknown"]}
 %% This contract is checked by test/fsm_mermaid_contract_test.dart.
 flowchart TD
+  AUTH[Authenticated user] --> MODEL[Automatically load local model]
+  MODEL --> READY{Model ready}
+  READY -->|no| RETRY[Wait and retry model loading]
+  RETRY --> MODEL
+  READY -->|yes| PROFILE{Saved profile exists}
+  PROFILE -->|no| ONBOARDING[onboarding entry point]
+  ONBOARDING --> INIT[Initialization Module]
+  INIT -->|profile saved| IDLE
+  PROFILE -->|yes| IDLE
+
   USER[User input] --> RESPOND[ConversationOrchestrator respond]
   RESPOND --> E{state emergency}
   E -->|yes| EP[Emergency protocol]
@@ -22,7 +32,8 @@ flowchart TD
   CONTEXT --> STACK
   FILL --> STACK
 
-  STACK --> GATE[Emergency gate]
+  STACK --> TIME[Time Engine builds temporal context]
+  TIME --> GATE[Emergency gate]
   GATE -->|preempt| EMERGENCY[emergency]
   EMERGENCY --> EP
   GATE -->|clear| PRIORITIZING[prioritizing]
@@ -40,4 +51,3 @@ flowchart TD
   NEXT --> USER
 
   STUB1[learningUser - declared stub]
-  STUB2[onboarding - declared stub]

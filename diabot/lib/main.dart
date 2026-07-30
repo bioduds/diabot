@@ -20,6 +20,7 @@ import 'onboarding_page.dart';
 import 'orchestrator.dart';
 import 'rag.dart';
 import 'stt.dart';
+import 'time_engine.dart';
 import 'user_profile.dart';
 
 const _kLastBuildNumberKey = 'diabot_last_build_number';
@@ -93,8 +94,7 @@ class DiabotApp extends StatelessWidget {
   }
 }
 
-/// Shows [LoginPage] when signed out, [ChatPage] when signed in (after
-/// completing the first-login [OnboardingPage] if no profile is saved yet).
+/// Shows [LoginPage] when signed out and [ChatPage] when signed in.
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
 
@@ -116,8 +116,8 @@ class AuthGate extends StatelessWidget {
   }
 }
 
-/// Decides between the onboarding flow and the chat page once the user is
-/// signed in, based on whether a [UserProfile] has already been saved.
+/// Starts [ChatPage] after authentication. The chat FSM receives the
+/// first-login onboarding entry point only when no [UserProfile] is saved.
 class _PostAuthGate extends StatefulWidget {
   const _PostAuthGate();
 
@@ -144,17 +144,14 @@ class _PostAuthGateState extends State<_PostAuthGate> {
     if (_onboardingComplete == null) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    if (_onboardingComplete == false) {
-      return OnboardingPage(
-        onDone: (_) => setState(() => _onboardingComplete = true),
-      );
-    }
-    return const ChatPage();
+    return ChatPage(startOnboarding: _onboardingComplete == false);
   }
 }
 
 class ChatPage extends StatefulWidget {
-  const ChatPage({super.key});
+  const ChatPage({super.key, this.startOnboarding = false});
+
+  final bool startOnboarding;
 
   @override
   State<ChatPage> createState() => _ChatPageState();
@@ -184,6 +181,8 @@ class _ChatPageState extends State<ChatPage> {
   StreamSubscription<String>? _tokenSub;
   StreamSubscription<CompletionEvent>? _compSub;
   bool _modelLoading = false;
+  bool _isBootstrapping = true;
+  String? _bootstrapError;
   UserProfile _profile = UserProfile();
   final RagService _rag = RagService();
   // "Gemma listens, DIABOT talks": Gemma is only ever asked to extract
@@ -195,7 +194,10 @@ class _ChatPageState extends State<ChatPage> {
   late final ConversationOrchestrator _orchestrator = ConversationOrchestrator(
     storeGateway: LocalDatabase.instance,
     onEducationRequest: _answerEducationQuestion,
-    emergencyEngine: EmergencyEngine(history: LocalDatabase.instance),
+    emergencyEngine: EmergencyEngine(
+      history: LocalDatabase.instance,
+      temporalContextProvider: TimeEngine(history: LocalDatabase.instance),
+    ),
   );
 
   // Voice input (mic button) state. Recording is captured as a 16kHz mono
@@ -211,51 +213,73 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
-    _loadProfile().then((_) async {
-      // Loaded sequentially (not concurrently) to avoid piling up several
-      // large native allocations (RAG embeddings + Whisper STT + Gemma)
-      // at the exact same moment, which previously caused a native
-      // out-of-memory crash on startup. Each one is still best-effort:
-      // a failure here doesn't block the app, it just disables that
-      // feature until retried.
-      //
-      // Loads the on-device embedding model + knowledge base. If it
-      // fails (e.g. low storage), RAG context is simply skipped and the
-      // chat still works with the base system prompt.
-      await _rag.ensureInitialized().catchError((_) {});
-      // Loads the on-device Whisper Tiny STT model, forcing decoding to
-      // the user's known language (from onboarding / device locale) so
-      // it doesn't randomly guess Portuguese, English, or Russian per
-      // recording. If it fails, the mic button will simply show an
-      // error when tapped.
-      await _stt
-          .ensureInitialized(language: _profile.idioma)
-          .catchError((_) {});
-      // The local Gemma 4B model is intentionally NOT auto-loaded here —
-      // see the doc comment on `_defaultModelPath` for why. Load it via
-      // the cloud-download icon in the app bar when ready.
-    });
+    _bootstrapAfterLogin();
   }
 
-  Future<void> _loadProfile() async {
+  Future<void> _bootstrapAfterLogin() async {
+    setState(() {
+      _isBootstrapping = true;
+      _bootstrapError = null;
+    });
     final profile = await UserProfile.load();
-    if (mounted) setState(() => _profile = profile);
+    final modelReady = await _initLocalModel(
+      _defaultModelPath,
+      showError: false,
+    );
+    if (!modelReady) {
+      if (mounted) {
+        setState(() {
+          _isBootstrapping = false;
+          _bootstrapError = 'Não foi possível carregar o modelo local.';
+        });
+      }
+      return;
+    }
+
+    OrchestratorReply? onboardingReply;
+    if (widget.startOnboarding) {
+      onboardingReply = await _orchestrator.beginOnboarding(
+        profile: profile,
+        deviceLanguage:
+            WidgetsBinding.instance.platformDispatcher.locale.languageCode,
+        accountDisplayName: FirebaseAuth.instance.currentUser?.displayName,
+      );
+    }
+    if (!mounted) return;
+    setState(() {
+      _profile = profile;
+      _isBootstrapping = false;
+      if (onboardingReply != null) {
+        _messages.add(Message(
+          'assistant',
+          onboardingReply.text,
+          quickReplies: onboardingReply.quickReplies,
+        ));
+      }
+    });
+
+    // These smaller local models begin only after the external GGUF is
+    // ready, avoiding concurrent native model initialization.
+    await _rag.ensureInitialized().catchError((_) {});
+    await _stt.ensureInitialized(language: profile.idioma).catchError((_) {});
   }
 
   Future<void> _editProfile() async {
     await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => OnboardingPage(
+      builder: (_) => ProfileEditorPage(
         existingProfile: _profile,
         onDone: (updated) => Navigator.of(context).pop(updated),
       ),
     ));
-    await _loadProfile();
+    final profile = await UserProfile.load();
+    if (mounted) setState(() => _profile = profile);
   }
 
   /// Sends [forcedText] (a tapped quick-reply label) or, if omitted, the
   /// current contents of the text field. Both typed/transcribed text and
   /// quick-reply taps go through the exact same orchestrator pipeline.
   Future<void> _sendMessage([String? forcedText]) async {
+    if (_isBootstrapping) return;
     final prompt = forcedText ?? _controller.text.trim();
     if (prompt.isEmpty) return;
 
@@ -301,8 +325,12 @@ class _ChatPageState extends State<ChatPage> {
     return chunks.first;
   }
 
-  Future<void> _initLocalModel(String modelPath) async {
-    if (_llamaParent != null) return;
+  Future<bool> _initLocalModel(
+    String modelPath, {
+    bool showError = true,
+  }) async {
+    if (_llamaParent != null) return true;
+    if (_modelLoading) return false;
 
     // Android's scoped storage blocks native mmap/open() access to
     // /sdcard paths unless "All files access" is granted — a special
@@ -313,14 +341,14 @@ class _ChatPageState extends State<ChatPage> {
     if (!await Permission.manageExternalStorage.isGranted) {
       final status = await Permission.manageExternalStorage.request();
       if (!status.isGranted) {
-        if (mounted) {
+        if (showError && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
               content: Text(
                   'É preciso conceder "Acesso a todos os arquivos" ao Diabot '
                   'para carregar o modelo local. Conceda a permissão e tente '
                   'novamente.')));
         }
-        return;
+        return false;
       }
     }
 
@@ -328,13 +356,13 @@ class _ChatPageState extends State<ChatPage> {
     // device yet, instead of letting llama.cpp try to mmap a missing/huge
     // path natively, which can hang the UI thread and appear to crash.
     if (!File(modelPath).existsSync()) {
-      if (mounted) {
+      if (showError && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(
                 'Modelo não encontrado em $modelPath. Copie o arquivo '
                 '.gguf para essa pasta no dispositivo antes de continuar.')));
       }
-      return;
+      return false;
     }
 
     setState(() {
@@ -391,15 +419,18 @@ class _ChatPageState extends State<ChatPage> {
       setState(() {
         _modelLoading = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        if (showError && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('Erro ao inicializar modelo local: $e')));
-      return;
+        }
+        return false;
     }
 
     setState(() {
       _llamaParent = parent;
       _modelLoading = false;
     });
+    return true;
   }
 
   void _clearConversation() {
@@ -553,6 +584,44 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+  Widget _buildBootstrapBody() {
+    final error = _bootstrapError;
+    if (error == null) {
+      return const Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('Carregando modelo local...'),
+          ],
+        ),
+      );
+    }
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(error, textAlign: TextAlign.center),
+            const SizedBox(height: 12),
+            const Text(
+              'Verifique o arquivo GGUF e a permissão de acesso a todos os arquivos.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton.icon(
+              onPressed: _bootstrapAfterLogin,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Tentar novamente'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -611,7 +680,9 @@ class _ChatPageState extends State<ChatPage> {
           ),
         ],
       ),
-      body: Column(
+        body: _isBootstrapping || _bootstrapError != null
+          ? _buildBootstrapBody()
+          : Column(
         children: [
           Expanded(
             child: ListView.builder(

@@ -69,7 +69,7 @@ Diabot is not a Flutter client for GlycoGuide. It is a separate Android-first pr
 
 ### Current capabilities
 
-- Firebase Google/email authentication and local onboarding profile.
+- Firebase Google/email authentication and a local profile collected through the FSM onboarding entry point.
 - Typed input, quick replies, on-device speech-to-text, and a local chat UI.
 - A deterministic FSM that handles glucose, meals, insulin, exercise, symptoms, illness, ketones, medication, CGM, profile, and question events.
 - Missing-field collection, optional `when`/`where`/`what happened before` context, explicit event priority, event lifecycle tracking, and append-only FSM audit records.
@@ -103,7 +103,7 @@ flutter test test/fsm_mermaid_contract_test.dart
 flutter run
 ```
 
-For the external GGUF, grant Diabot Android's **All files access** permission, then use the cloud icon in the app to initialize the model. The model is not loaded automatically because loading it alongside the local RAG and speech models can exceed available memory on a mid-range phone.
+For the external GGUF, copy the file to the configured device path and grant Diabot Android's **All files access** permission. After login, Diabot loads the external model automatically before starting the chat or first-login onboarding; if either prerequisite is unavailable, it waits and offers a retry. RAG and speech models load only after the GGUF is ready, sequentially.
 
 ### FSM kernel
 
@@ -117,7 +117,11 @@ input -> deterministic shortcut or semantic extraction -> event stack
 
 Each event has an ID, source, lifecycle status, and audit trail. A completed event is stored; an invalid or unrecognized event is discarded with a reason; events that trigger emergency pre-emption are retained and resumed afterward. SQLite is accessed through the storage gateway rather than directly by the knowledge or priority engines.
 
+On first login without a saved profile, the FSM enters `onboarding` only after the local model is ready. It gathers and saves the profile locally, then transitions to `idle`. Later logins detect the saved profile and enter `idle` directly.
+
 The persisted Mermaid specifications live in [diabot/docs/fsm](diabot/docs/fsm). Each map contains a machine-readable contract checked against the Dart FSM declarations by `flutter test test/fsm_mermaid_contract_test.dart`. This verifies the declared states, event types, priority, lifecycle edges, and emergency contract, rather than attempting to infer arbitrary diagram layout.
+
+The Time Engine is a separate Diabot module that derives context from the current event stack and timestamped local history across 15-minute, 1-hour, 4-hour, 12-hour, and 24-hour windows. It supplies temporal facts to the Emergency Engine; temporal Priority and Knowledge rules must first be specified in Mermaid before implementation.
 
 ### FSM evolution
 
