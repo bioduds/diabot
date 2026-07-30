@@ -119,6 +119,12 @@ Each event has an ID, source, lifecycle status, and audit trail. A completed eve
 
 The persisted Mermaid specifications live in [diabot/docs/fsm](diabot/docs/fsm). Each map contains a machine-readable contract checked against the Dart FSM declarations by `flutter test test/fsm_mermaid_contract_test.dart`. This verifies the declared states, event types, priority, lifecycle edges, and emergency contract, rather than attempting to infer arbitrary diagram layout.
 
+### FSM evolution
+
+The current kernel is designed to grow by modular event behavior without a new architectural redesign. Its global FSM, event lifecycle, emergency, priority, and knowledge engines remain separate. Begin each behavior change with complete Mermaid diagrams and the matching contract; then assess lifecycle, emergency, priority, and knowledge impact, add tests, and only then implement Dart.
+
+Do not create event-specific global states such as meal or glucose states. Classify a feature as a new `EventType`, `FieldSpec`, `EmergencyEngine` rule, `PriorityEngine` rule, or `KnowledgeEngine`-only change. Change global states, the lifecycle diagram, or the emergency diagram only when that classification requires it. The full agent workflow is in [AGENTS.md](AGENTS.md).
+
 For an implementation handoff, run `cd diabot && docs/create_fsm_handoff_zip.sh`. It produces [diabot/docs/zip/diabot-fsm-handoff.zip](diabot/docs/zip/diabot-fsm-handoff.zip) with the diagrams, implementation references, and tests required to understand and verify the FSM.
 
 ## Repository layout
