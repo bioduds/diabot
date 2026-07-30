@@ -1,137 +1,141 @@
-# Diabot / GlycoGuide — Local LLM CGM Assistant for Type 1 Diabetes
+# Diabot and GlycoGuide
 
-This repository contains two related, local-first projects for Type 1 diabetes support powered by local LLMs (no cloud, no data leaving your machine):
+This repository contains two independent diabetes-support prototypes. They do not share an API, database, or runtime:
 
-- **[`app/`](app/)** — **GlycoGuide**, a FastAPI web app (documented below) that tracks CGM data, carbs, exercise, weight, and insulin, and chats with you about patterns via [Ollama](https://ollama.com).
-- **[`diabot/`](diabot/README.md)** — **Diabot**, a Flutter mobile MVP for simple chat conversations with a local model (Gemma 3 / TinyLlama) over Ollama.
+- **GlycoGuide** (`app/`) is a local FastAPI web application that stores CGM and self-reported data, optionally syncs LibreLinkUp, and uses Ollama for educational pattern discussion.
+- **Diabot** (`diabot/`) is an Android-focused Flutter application with a deterministic finite-state-machine (FSM) kernel. It logs events locally, accepts structured extraction from an optional on-device model, provides retrieval-only education answers, and supports on-device speech-to-text.
 
----
+Neither application is a medical device. They do not diagnose conditions, calculate insulin doses, prescribe treatment, or replace an emergency plan or a qualified care team.
 
-## GlycoGuide (web app)
+## Safety and data boundaries
 
-GlycoGuide is a **local-first** web app that uses [Ollama](https://ollama.com) to help you organize and interpret:
+Use this software only as an educational and logging aid. Follow your own clinical care plan and seek urgent professional help for an emergency.
 
-- **CGM data** from FreeStyle Libre 2 Plus (via LibreLink / LibreView CSV export)
-- **Carbohydrate counting** and meal boluses
-- **Exercise** logs
-- **Weight** measurements
-- **Insulin** types, units, I:C ratio, and correction factor
+Data handling differs by application:
 
-The assistant proactively reminds you to log missing data and discusses glucose **patterns** in plain language — but it is **not a doctor** and never adjusts insulin doses.
+- **GlycoGuide** keeps its SQLite database locally by default. It sends requests to the configured Ollama endpoint and, when enabled, sends LibreLinkUp credentials to Abbott to authenticate and retrieve shared data. The default Ollama endpoint is loopback, but a non-local `OLLAMA_BASE_URL` changes that boundary.
+- **Diabot** stores event logs and FSM audit records in local SQLite and keeps the onboarding profile in local preferences. Firebase/Google authentication is an external service. Its bundled RAG and speech models run on-device; its external Gemma GGUF is loaded from device storage.
 
-## Important disclaimer
+Health records and profiles are not encrypted at rest by Diabot. GlycoGuide encrypts the saved LibreLinkUp password, but its local database still contains health data. Treat development devices accordingly.
 
-GlycoGuide provides educational decision support only. It does **not** diagnose, prescribe, or replace your endocrinology team. For hypoglycemia, severe hyperglycemia, or any emergency, follow your care plan and seek appropriate medical help immediately.
+## GlycoGuide web application
 
-## Requirements
+### Features
+
+- LibreLinkUp synchronization and LibreView/LibreLink-style CSV import.
+- Local SQLite storage for CGM readings, meals/carbohydrates, exercise, weight, insulin logs, profile data, and chat history.
+- Stale-data check-ins for CGM review, meals, exercise, weight, and insulin.
+- Ollama-backed educational discussion of recorded patterns with prompt-level medical guardrails.
+
+### Requirements
 
 - Python 3.10+
-- [Ollama](https://ollama.com) running locally
-- A pulled model (default: `llama3.2`)
+- [Ollama](https://ollama.com)
+- A locally pulled Ollama model; the code defaults to `gemma3:4b`
+
+### Run locally
 
 ```bash
-ollama serve          # if not already running
-ollama pull llama3.2  # or set OLLAMA_MODEL=gemma3:4b
-```
-
-## Quick start
-
-```bash
-cd diabetes-cgm-assistant
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+ollama pull gemma3:4b
+ollama serve
+
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8080
 ```
 
-Open [http://127.0.0.1:8080](http://127.0.0.1:8080)
+Open `http://127.0.0.1:8080`.
 
-1. Complete your **insulin profile** and accept the disclaimer
-2. **Connect LibreLinkUp** with your email and password (recommended), or import a LibreView CSV
-3. Log **carbs, exercise, weight, and insulin**
-4. Chat with GlycoGuide about trends and what to track next
+### Configuration
 
-## LibreLinkUp connection (recommended)
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API endpoint |
+| `OLLAMA_MODEL` | `gemma3:4b` | Ollama model name |
 
-GlycoGuide can pull CGM readings directly from **LibreLinkUp** using your login and password.
+### LibreLinkUp and CSV
 
-### Setup steps
+LibreLinkUp synchronization is optional and needs an internet connection plus a LibreLinkUp account that has been invited to view the shared LibreLink data. It depends on an unofficial integration and may stop working if the upstream service changes.
 
-1. Install [LibreLinkUp](https://www.librelinkup.com/) on your phone and create an account
-2. In the **LibreLink** app (on the patient's phone), go to **Share** or **Connected Apps** and invite your LibreLinkUp account
-3. Accept the invitation in LibreLinkUp
-4. In GlycoGuide, enter your **LibreLinkUp email and password**
-5. Select your **region** (Latin America / LA for Brazil) and click **Connect & sync**
+CSV import is the alternative: export glucose history from LibreView, then import the file through the web UI. Disconnecting LibreLinkUp removes saved credentials but does not remove previously imported readings or other local logs.
 
-GlycoGuide syncs automatically every 5 minutes while running. You can also click **Sync now** anytime.
+GlycoGuide stores local data in `data/cgm_assistant.db`.
 
-Credentials are stored **locally** on your machine, encrypted with a key in `data/.fernet_key`. They never leave your computer except to authenticate with Abbott's LibreLinkUp API.
+## Diabot Flutter application
 
-## Importing LibreLink / LibreView CSV (alternative)
+Diabot is not a Flutter client for GlycoGuide. It is a separate Android-first prototype with its own authentication, local storage, and FSM kernel.
 
-Abbott does not expose a public LibreLink API for personal use. The supported workflow today:
+### Current capabilities
 
-1. Sync FreeStyle Libre 2 Plus with the **LibreLink** app
-2. Open [LibreView](https://www.libreview.com) → Glucose History → **Download glucose data** (CSV)
-3. In GlycoGuide, click **Import LibreLink CSV**
+- Firebase Google/email authentication and local onboarding profile.
+- Typed input, quick replies, on-device speech-to-text, and a local chat UI.
+- A deterministic FSM that handles glucose, meals, insulin, exercise, symptoms, illness, ketones, medication, CGM, profile, and question events.
+- Missing-field collection, optional `when`/`where`/`what happened before` context, explicit event priority, event lifecycle tracking, and append-only FSM audit records.
+- Composed emergency pre-emption using available signals, followed by resume of pending events. This is non-clinically-validated conversational guidance, not emergency dispatch or medical decision support.
+- Local SQLite event logs and RAG retrieval for educational questions.
 
-The parser accepts common Abbott export column names (`Device Timestamp`, `Historic Glucose mg/dL`, etc.).
+### Deliberate limits
 
-## Configuration
+- No insulin-dose calculation, treatment recommendation, emergency calling, live CGM feed, trend analysis, charts, CSV export, or cloud sync of health records.
+- `cgm` and `profile` events are recognized but do not yet have complete collection workflows.
+- The external Gemma model only extracts structured events. It does not generate the user-facing conversation. Without it, deterministic quick replies and bare numeric glucose entries still work; unconstrained free text is clarified instead.
+- The build number is intentionally bumped for test builds. A changed build number clears local preferences, Firebase/Google session, and Diabot SQLite data on launch.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API URL |
-| `OLLAMA_MODEL` | `llama3.2` | Model name |
+### Requirements
 
-Example:
+- Flutter and an Android SDK; Java 17 is required by the Android build.
+- Android device or emulator.
+- Valid Firebase Android configuration for authentication.
+- Bundled assets for RAG and STT. They are intentionally not all committed to Git because model files are large.
+- Optional free-text event extraction: a compatible Gemma GGUF copied to the device, normally `/sdcard/Download/gemma-3-4b-Q4_0.gguf`.
+
+Diabot does **not** require Ollama.
+
+### Run and test
 
 ```bash
-export OLLAMA_MODEL=gemma3:4b
-uvicorn app.main:app --reload --port 8080
+cd diabot
+flutter pub get
+flutter test test/orchestrator_test.dart
+flutter run
 ```
 
-## Data storage
+For the external GGUF, grant Diabot Android's **All files access** permission, then use the cloud icon in the app to initialize the model. The model is not loaded automatically because loading it alongside the local RAG and speech models can exceed available memory on a mid-range phone.
 
-All data stays on your machine in:
+### FSM kernel
 
-```
-diabetes-cgm-assistant/data/cgm_assistant.db
-```
+The FSM, not the model, controls the flow:
 
-## Architecture
-
-```
-app/
-  main.py       # FastAPI routes + static UI
-  database.py   # SQLite persistence
-  llm.py        # Ollama chat with medical guardrails
-  librelink.py      # LibreView CSV parser
-  librelinkup_sync.py  # LibreLinkUp login + sync
-  secrets.py        # Local credential encryption
-  checkins.py   # Proactive reminder engine
-  static/       # Web UI
+```text
+input -> deterministic shortcut or semantic extraction -> event stack
+      -> emergency gate -> priority -> missing information
+      -> optional context -> validation -> storage/audit -> next actions
 ```
 
-## Proactive check-ins
+Each event has an ID, source, lifecycle status, and audit trail. A completed event is stored; an invalid or unrecognized event is discarded with a reason; events that trigger emergency pre-emption are retained and resumed afterward. SQLite is accessed through the storage gateway rather than directly by the knowledge or priority engines.
 
-GlycoGuide nudges you when data is stale:
+## Repository layout
 
-| Category | Default interval |
-| ---------- | ------------------ |
-| Carbs | 5 hours |
-| Exercise | 8 hours |
-| Weight | 7 days |
-| Insulin | 12 hours |
-| CGM review | 6 hours |
+```text
+app/                 GlycoGuide FastAPI application
+data/                GlycoGuide local database and runtime data
+diabot/              Independent Flutter Android-first application
+  lib/events.dart    FSM data model, engines, schemas, and suggestions
+  lib/orchestrator.dart
+                     FSM transitions and event resolution
+  lib/local_db.dart  SQLite storage and FSM audit gateway
+  lib/nlu.dart       Grammar-constrained semantic event extraction
+  lib/rag.dart       Local retrieval-only education service
+  lib/stt.dart       On-device speech-to-text service
+  test/              FSM and widget tests
+```
 
-## Roadmap ideas
+## Development status
 
-- LibreLink (patient app) direct login in addition to LibreLinkUp
-- Time-in-range and AGP-style summaries
-- Nightscout / Tidepool import
-- Scheduled background check-in messages
+This is active prototype software. The Diabot kernel has focused automated tests for deterministic input, lifecycle transitions, storage/audit behavior, optional context, emergency pre-emption/resume, and education routing. Neither application has a complete clinical validation, security audit, or production deployment profile.
 
 ## License
 
-MIT — use at your own risk; not a medical device.
+MIT. Use at your own risk; not a medical device.

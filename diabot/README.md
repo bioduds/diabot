@@ -1,29 +1,17 @@
 # Diabot
 
-Diabot é um MVP Flutter para testar conversas simples com Gemma 3 1B via Ollama HTTP.
+Diabot is an Android-first Flutter prototype for structured diabetes event logging. Its finite-state-machine (FSM) kernel controls conversation flow; an optional on-device Gemma GGUF is limited to semantic event extraction.
 
-## Como usar
+The authoritative repository documentation is in the [root README](../README.md). It covers architecture, safety limits, storage boundaries, model setup, and the relationship between Diabot and the independent GlycoGuide web app.
 
-1. Instale Flutter e configure o Android SDK.
-2. Garanta que o Ollama esteja rodando localmente em `http://127.0.0.1:11434`.
-3. No diretório `diabot`, execute:
+## Run
 
 ```bash
 flutter pub get
+flutter test test/orchestrator_test.dart
 flutter run
 ```
 
-## MVP
+Diabot does not use Ollama. To enable free-text semantic extraction, manually copy a compatible GGUF to Android device storage (default: `/sdcard/Download/gemma-3-4b-Q4_0.gguf`), grant **All files access**, then initialize it from the cloud icon in the app.
 
-- Uma tela única
-- Campo de texto
-- Botão enviar
-- Histórico simples de mensagens
-- Botão limpar conversa
-- Indicador visual de processamento
-
-## Requisitos
-
-- Android device ou emulador
-- Ollama rodando localmente
-- Modelo `gemma3:1b` disponível no Ollama
+Without the external model, quick replies and bare numeric glucose entries remain available through the deterministic FSM.
