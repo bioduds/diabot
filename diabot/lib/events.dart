@@ -50,7 +50,14 @@ enum DiabotGlobalState {
 enum FieldKind { yesNo, number, option, freeText }
 
 /// Where an event entered the kernel. Sources are evidence, not states.
-enum EventSource { userText, quickReply, numericInput, semanticParser, cgm, system }
+enum EventSource {
+  userText,
+  quickReply,
+  numericInput,
+  semanticParser,
+  cgm,
+  system
+}
 
 /// Each event has one lifecycle position at a time.
 enum EventStatus {
@@ -144,6 +151,145 @@ class FsmContract {
   static const temporalTimestamp = 'createdAt';
   static const timeEngineChangesGlobalState = false;
   static const timeEngineChangesLifecycle = false;
+
+  static const profileFields = [
+    'name',
+    'email',
+    'photoUrl',
+    'diabetesType',
+    'weightKg',
+    'heightCm',
+    'ageYears',
+    'sex',
+    'cgm',
+    'insulinPump',
+    'insulinTypes',
+    'insulinCarbRatio',
+    'correctionFactor',
+    'hypoglycemiaUnawareness',
+    'diagnosisDuration',
+    'knowledgeLevel',
+    'interactionMode',
+  ];
+
+  static const profileSources = [
+    'authenticated-user',
+    'current-profile',
+    'event-stack',
+    'sqlite-history',
+  ];
+  static const profileOutputs = [
+    'updated-profile',
+    'completeness-score',
+    'missing-information',
+    'confidence-scores',
+  ];
+  static const profileConsumers = [
+    'emergency',
+    'priority',
+    'knowledge',
+    'profile-view',
+  ];
+  static const profilePersistence = 'sqlite-profile-snapshot';
+  static const profileEngineChangesGlobalState = false;
+  static const profileEngineChangesLifecycle = false;
+  static const profileEngineAsksQuestions = false;
+  static const profileEngineDoesMedicalReasoning = false;
+  static const profileLifecycleSteps = [
+    'observed',
+    'merged',
+    'persisted',
+    'retrieved',
+    'photo-selected',
+    'projected',
+    'rendered',
+  ];
+  static const profileViewGeneralFields = [
+    'name',
+    'email',
+    'ageYears',
+    'sex',
+    'weightKg',
+    'heightCm',
+  ];
+  static const profileViewPriorityGroups = [
+    [
+      'diabetesType',
+      'cgm',
+      'insulinPump',
+      'insulinTypes',
+    ],
+    [
+      'insulinCarbRatio',
+      'correctionFactor',
+      'hypoglycemiaUnawareness',
+      'diagnosisDuration',
+    ],
+    [
+      'knowledgeLevel',
+      'interactionMode',
+    ],
+    [
+      'exerciseProfile',
+      'mealPatterns',
+      'insulinUsagePatterns',
+      'learnedFacts',
+    ],
+  ];
+  static const profileViewKnownOnly = true;
+  static const profileViewDynamic = true;
+  static const profileViewSort = 'general-then-priority-ascending';
+  static const profileViewAvatarSources = [
+    'authenticated-photo',
+    'local-photo',
+    'picker-placeholder',
+  ];
+  static const profileViewCompleteness = 'always-render';
+  static const profileCompletenessScore =
+      'priority-weighted-known-health-facts';
+  static const profileCompletenessFields = [
+    'diabetesType',
+    'weightKg',
+    'heightCm',
+    'ageYears',
+    'sex',
+    'cgm',
+    'insulinPump',
+    'insulinTypes',
+    'insulinCarbRatio',
+    'correctionFactor',
+    'hypoglycemiaUnawareness',
+    'diagnosisDuration',
+    'knowledgeLevel',
+    'interactionMode',
+  ];
+  static const profileCompletenessPriorityGroups = [
+    [
+      'diabetesType',
+      'weightKg',
+      'cgm',
+      'insulinPump',
+      'insulinTypes',
+    ],
+    [
+      'insulinCarbRatio',
+      'correctionFactor',
+      'hypoglycemiaUnawareness',
+      'diagnosisDuration',
+    ],
+    [
+      'ageYears',
+      'sex',
+      'heightCm',
+      'knowledgeLevel',
+      'interactionMode',
+    ],
+  ];
+  static const profileCompletenessWeights = [12, 8, 4];
+  static const profileViewChangesGlobalState = false;
+  static const profileViewChangesLifecycle = false;
+  static const profileViewAsksQuestions = false;
+  static const profileViewDoesMedicalReasoning = false;
 }
 
 /// One piece of information an event may still be missing, and how to ask
@@ -265,6 +411,22 @@ abstract interface class TemporalContextProvider {
   Future<TemporalContext> buildContext(List<EventInstance> stack);
 }
 
+/// Read-only facts about the user, assembled passively from profile data and
+/// normal conversation. Consumers may inspect it but must not turn missing
+/// facts into new FSM states.
+abstract interface class ProfileContext {
+  Object? value(String field);
+  double confidence(String field);
+  int get completenessScore;
+  List<String> get missingInformation;
+}
+
+/// Local persistence boundary for the evolving profile snapshot.
+abstract interface class ProfileSnapshotGateway {
+  Future<Map<String, dynamic>?> loadProfileSnapshot();
+  Future<void> saveProfileSnapshot(Map<String, dynamic> snapshot);
+}
+
 /// The only boundary through which the FSM persists data or its audit log.
 abstract interface class FsmStoreGateway {
   Future<void> storeEvent(EventInstance event);
@@ -325,7 +487,11 @@ final Map<EventType, List<FieldSpec>> eventDefinitions = {
       question: 'Que bom que você se exercitou! A atividade foi:',
       kind: FieldKind.option,
       quickReplies: ['Leve', 'Moderada', 'Intensa'],
-      optionValues: {'leve': 'leve', 'moderad': 'moderada', 'intens': 'intensa'},
+      optionValues: {
+        'leve': 'leve',
+        'moderad': 'moderada',
+        'intens': 'intensa'
+      },
       priority: 0,
     ),
   ],
@@ -363,7 +529,12 @@ final Map<EventType, List<FieldSpec>> eventDefinitions = {
       question: 'Isso parece mais com sintomas de açúcar baixo ou açúcar alto?',
       kind: FieldKind.option,
       quickReplies: ['Baixo (hipoglicemia)', 'Alto (hiperglicemia)'],
-      optionValues: {'baixo': 'hypo', 'hipo': 'hypo', 'alto': 'hyper', 'hiper': 'hyper'},
+      optionValues: {
+        'baixo': 'hypo',
+        'hipo': 'hypo',
+        'alto': 'hyper',
+        'hiper': 'hyper'
+      },
       priority: 0,
     ),
     FieldSpec(
@@ -456,7 +627,8 @@ class SuggestionEngine {
 /// Pure functions answering "what does this event still need?" — the only
 /// thing the FSM asks the data table, never "is this a meal?".
 class KnowledgeEngine {
-  static List<FieldSpec> missingFields(EventType type, Map<String, dynamic> known) {
+  static List<FieldSpec> missingFields(
+      EventType type, Map<String, dynamic> known) {
     final specs = eventDefinitions[type] ?? const <FieldSpec>[];
     final missing = <FieldSpec>[];
     for (final spec in specs) {
@@ -473,6 +645,11 @@ class KnowledgeEngine {
 
   static bool isComplete(EventType type, Map<String, dynamic> known) =>
       missingFields(type, known).isEmpty;
+
+  /// Missing profile facts remain knowledge data. The kernel decides whether
+  /// to surface them; ProfileEngine itself never asks for them.
+  static List<String> missingProfileInformation(ProfileContext profile) =>
+      profile.missingInformation;
 }
 
 /// Rejects structurally impossible data only; it never evaluates medical care.
@@ -481,7 +658,8 @@ class ValidationEngine {
     for (final key in const ['value', 'dose', 'carbsGrams', 'duration']) {
       final value = event.data[key];
       if (value is num && (!value.isFinite || value < 0)) {
-        return EventValidation.invalid('$key must be a finite non-negative number');
+        return EventValidation.invalid(
+            '$key must be a finite non-negative number');
       }
     }
     return EventValidation.valid;
@@ -546,7 +724,8 @@ class EmergencyAssessment {
   final double severity;
   final bool usedTemporalContext;
 
-  static const none = EmergencyAssessment(isEmergency: false, reason: '', severity: 0);
+  static const none =
+      EmergencyAssessment(isEmergency: false, reason: '', severity: 0);
 }
 
 /// Decides whether the current situation warrants pre-empting everything
@@ -572,7 +751,10 @@ class EmergencyEngine {
   final RecentEventReader? _history;
   final TemporalContextProvider? _temporalContextProvider;
 
-  Future<EmergencyAssessment> assess(List<EventInstance> stack) async {
+  Future<EmergencyAssessment> assess(
+    List<EventInstance> stack, {
+    ProfileContext? profileContext,
+  }) async {
     double? glucose;
     String? symptomType;
     for (final event in stack) {
@@ -580,8 +762,12 @@ class EmergencyEngine {
         glucose ??= (event.data['value'] as num).toDouble();
       }
       if (event.type == EventType.symptoms) {
-        if (event.data['value'] != null) glucose ??= (event.data['value'] as num).toDouble();
-        if (event.data['symptomType'] != null) symptomType ??= event.data['symptomType'] as String;
+        if (event.data['value'] != null) {
+          glucose ??= (event.data['value'] as num).toDouble();
+        }
+        if (event.data['symptomType'] != null) {
+          symptomType ??= event.data['symptomType'] as String;
+        }
       }
     }
 
@@ -605,7 +791,8 @@ class EmergencyEngine {
           const Duration(hours: 4),
         ) ??
         recentExercise.any((row) {
-          final payload = jsonDecode(row['payload'] as String) as Map<String, dynamic>;
+          final payload =
+              jsonDecode(row['payload'] as String) as Map<String, dynamic>;
           return payload['intensity'] == 'intensa';
         });
 
@@ -614,6 +801,9 @@ class EmergencyEngine {
       activeSymptomType: symptomType,
       recentFastActingInsulin: recentFastActingInsulin,
       recentIntenseExercise: recentIntenseExercise,
+      hypoglycemiaUnawareness:
+          profileContext?.value('hypoglycemiaUnawareness') == true &&
+              profileContext!.confidence('hypoglycemiaUnawareness') >= 0.5,
     );
     return _score(context, usedTemporalContext: temporalContext != null);
   }
@@ -695,14 +885,17 @@ const List<FieldSpec> emergencyProtocolFields = [
   ),
 ];
 
-double? asDouble(dynamic value) => value == null ? null : (value as num).toDouble();
+double? asDouble(dynamic value) =>
+    value == null ? null : (value as num).toDouble();
 
-String formatNumber(num value) =>
-    value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toString();
+String formatNumber(num value) => value == value.roundToDouble()
+    ? value.toStringAsFixed(0)
+    : value.toString();
 
 /// Per-event completion messages — data, not FSM control flow (the loop
 /// only ever does `eventCompletionMessages[type]?.call(data)`).
-final Map<EventType, String Function(Map<String, dynamic> data)> eventCompletionMessages = {
+final Map<EventType, String Function(Map<String, dynamic> data)>
+    eventCompletionMessages = {
   EventType.meal: (data) {
     final food = data['food'] as String?;
     final grams = asDouble(data['carbsGrams']);
@@ -722,7 +915,8 @@ final Map<EventType, String Function(Map<String, dynamic> data)> eventCompletion
   EventType.glucose: (data) {
     final value = asDouble(data['value']);
     final usedInsulin = data['usedInsulin'] == true;
-    final base = 'Entendido${value != null ? ' — glicemia de ${formatNumber(value)} mg/dL registrada' : ''}.';
+    final base =
+        'Entendido${value != null ? ' — glicemia de ${formatNumber(value)} mg/dL registrada' : ''}.';
     if (usedInsulin) {
       return '$base Como você usou insulina recentemente, fique atento a '
           'sinais de hipoglicemia nas próximas horas.';

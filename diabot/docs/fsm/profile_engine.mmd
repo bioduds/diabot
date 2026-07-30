@@ -1,0 +1,25 @@
+%% fsm-contract: {"profileFields":["name","email","photoUrl","diabetesType","weightKg","heightCm","ageYears","sex","cgm","insulinPump","insulinTypes","insulinCarbRatio","correctionFactor","hypoglycemiaUnawareness","diagnosisDuration","knowledgeLevel","interactionMode"],"sources":["authenticated-user","current-profile","event-stack","sqlite-history"],"outputs":["updated-profile","completeness-score","missing-information","confidence-scores"],"consumers":["emergency","priority","knowledge","profile-view"],"persistence":"sqlite-profile-snapshot","globalStateChange":false,"lifecycleChange":false,"asksQuestions":false,"medicalReasoning":false}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  AUTH[Authenticated user identity] --> PROFILE[ProfileEngine enrich]
+  LOCAL_PHOTO[Local selected profile photo] --> PROFILE
+  CURRENT[Current user profile] --> PROFILE
+  STACK[Current event stack] --> PROFILE
+  HISTORY[SQLite profile history] --> PROFILE
+
+  PROFILE --> FACTS[Updated profile facts]
+  PROFILE --> SCORE[Completeness score]
+  PROFILE --> MISSING[Missing profile information]
+  PROFILE --> CONFIDENCE[Confidence scores]
+
+  FACTS --> CONTEXT[GlobalContext]
+  SCORE --> CONTEXT
+  MISSING --> CONTEXT
+  CONFIDENCE --> CONTEXT
+
+  CONTEXT --> EMERGENCY[EmergencyEngine]
+  CONTEXT --> PRIORITY[PriorityEngine]
+  CONTEXT --> KNOWLEDGE[KnowledgeEngine]
+  CONTEXT --> VIEW[Profile View projection]
+
+  NOTE[Passive: no questionnaire, no recommendation, no new DiabotGlobalState or EventStatus]

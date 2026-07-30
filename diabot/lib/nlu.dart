@@ -60,12 +60,13 @@ class IntentClassifier {
   /// constrained decoding forces every generated token to stay inside this
   /// exact shape and ends the moment it's complete.
   static const grammar = r'''
-root ::= "{\"events\": [" events-list "], \"entities\": {\"glucose\": " num-or-null ", \"food\": " str-or-null ", \"carbs_grams\": " num-or-null ", \"duration\": " num-or-null ", \"intensity\": " str-or-null ", \"insulin_type\": " str-or-null ", \"dose\": " num-or-null ", \"symptom_type\": " str-or-null "}, \"confidence\": " conf-value "}"
+root ::= "{\"events\": [" events-list "], \"entities\": {\"glucose\": " num-or-null ", \"food\": " str-or-null ", \"carbs_grams\": " num-or-null ", \"duration\": " num-or-null ", \"intensity\": " str-or-null ", \"insulin_type\": " str-or-null ", \"dose\": " num-or-null ", \"symptom_type\": " str-or-null ", \"profile_diabetes_type\": " str-or-null ", \"profile_weight_kg\": " num-or-null ", \"profile_height_cm\": " num-or-null ", \"profile_age_years\": " num-or-null ", \"profile_sex\": " str-or-null ", \"profile_cgm\": " str-or-null ", \"profile_insulin_pump\": " str-or-null ", \"profile_insulin_carb_ratio\": " str-or-null ", \"profile_correction_factor\": " str-or-null ", \"profile_hypoglycemia_unawareness\": " bool-or-null ", \"profile_diagnosis_duration\": " str-or-null ", \"profile_knowledge_level\": " str-or-null ", \"profile_interaction_mode\": " str-or-null "}, \"confidence\": " conf-value "}"
 events-list ::= "\"" event-value "\"" (", \"" event-value "\"")*
 event-value ::= "glucose" | "meal" | "insulin" | "exercise" | "illness" | "ketones" | "medication" | "symptoms" | "cgm" | "profile" | "question" | "unknown"
 conf-value ::= "0" ("." [0-9] [0-9]?)? | "1" ("." "0")?
 str-or-null ::= "null" | "\"" [^"\n]* "\""
 num-or-null ::= "null" | "-"? [0-9]+ ("." [0-9]+)?
+bool-or-null ::= "null" | "true" | "false"
 ''';
 
   static const _systemPrompt = '''
@@ -81,19 +82,19 @@ Os eventos possíveis são exatamente estes (pode haver mais de um na mesma fras
 - "medication": o usuário relata outro medicamento além de insulina.
 - "symptoms": sintomas de hipoglicemia ou hiperglicemia (tremor, suor frio, tontura, fraqueza, fome súbita, confusão, muita sede, muita vontade de urinar, visão turva, cansaço extremo).
 - "cgm": menção a sensor de glicemia contínua (CGM).
-- "profile": informação pessoal/cadastral (ex: tipo de diabetes, peso).
+- "profile": informação pessoal/cadastral (ex: tipo de diabetes, peso, uso de sensor, bomba, proporção insulina/carboidrato ou fator de correção).
 - "question": o usuário está fazendo uma pergunta e quer uma explicação.
 - "unknown": qualquer outra coisa, incluindo cumprimentos, ou frases que não se encaixam acima.
 
 Formato de saída (sempre as mesmas chaves; use null quando não souber; "events" é uma lista com 1 ou mais itens):
-{"events": [<um ou mais dos valores acima>], "entities": {"glucose": <número ou null>, "food": <string ou null>, "carbs_grams": <número ou null>, "duration": <número ou null>, "intensity": <string ou null>, "insulin_type": <string ou null>, "dose": <número ou null>, "symptom_type": <"hypo", "hyper" ou null>}, "confidence": <0.0 a 1.0>}
+{"events": [<um ou mais dos valores acima>], "entities": {"glucose": <número ou null>, "food": <string ou null>, "carbs_grams": <número ou null>, "duration": <número ou null>, "intensity": <string ou null>, "insulin_type": <string ou null>, "dose": <número ou null>, "symptom_type": <"hypo", "hyper" ou null>, "profile_diabetes_type": <string ou null>, "profile_weight_kg": <número ou null>, "profile_height_cm": <número ou null>, "profile_age_years": <número ou null>, "profile_sex": <string ou null>, "profile_cgm": <string ou null>, "profile_insulin_pump": <string ou null>, "profile_insulin_carb_ratio": <string ou null>, "profile_correction_factor": <string ou null>, "profile_hypoglycemia_unawareness": <true, false ou null>, "profile_diagnosis_duration": <string ou null>, "profile_knowledge_level": <string ou null>, "profile_interaction_mode": <string ou null>}, "confidence": <0.0 a 1.0>}
 
 Exemplos:
 Entrada: comi uma pizza e tomei 8 unidades de fiasp
 Saída: {"events": ["meal", "insulin"], "entities": {"glucose": null, "food": "pizza", "carbs_grams": null, "duration": null, "intensity": null, "insulin_type": "Fiasp", "dose": 8}, "confidence": 0.9}
 
 Entrada: 117
-Saída: {"events": ["glucose"], "entities": {"glucose": 117, "food": null, "carbs_grams": null, "duration": null, "intensity": null, "insulin_type": null, "dose": null, "symptom_type": null}, "confidence": 0.95}
+Saída: {"events": ["glucose"], "entities": {"glucose": 117, "food": null, "carbs_grams": null, "duration": null, "intensity": null, "insulin_type": null, "dose": null, "symptom_type": null, "profile_diabetes_type": null, "profile_weight_kg": null, "profile_height_cm": null, "profile_age_years": null, "profile_sex": null, "profile_cgm": null, "profile_insulin_pump": null, "profile_insulin_carb_ratio": null, "profile_correction_factor": null, "profile_hypoglycemia_unawareness": null, "profile_diagnosis_duration": null, "profile_knowledge_level": null, "profile_interaction_mode": null}, "confidence": 0.95}
 
 Entrada: minha glicemia está em 117, vou comer uma pizza e vou caminhar 40 minutos
 Saída: {"events": ["glucose", "meal", "exercise"], "entities": {"glucose": 117, "food": "pizza", "carbs_grams": null, "duration": 40, "intensity": null, "insulin_type": null, "dose": null, "symptom_type": null}, "confidence": 0.9}
@@ -114,7 +115,7 @@ Entrada: por que a insulina baixa a glicemia?
 Saída: {"events": ["question"], "entities": {"glucose": null, "food": null, "carbs_grams": null, "duration": null, "intensity": null, "insulin_type": null, "dose": null, "symptom_type": null}, "confidence": 0.85}
 
 Entrada: oi, bom dia
-Saída: {"events": ["unknown"], "entities": {"glucose": null, "food": null, "carbs_grams": null, "duration": null, "intensity": null, "insulin_type": null, "dose": null, "symptom_type": null}, "confidence": 0.9}
+Saída: {"events": ["unknown"], "entities": {"glucose": null, "food": null, "carbs_grams": null, "duration": null, "intensity": null, "insulin_type": null, "dose": null, "symptom_type": null, "profile_diabetes_type": null, "profile_weight_kg": null, "profile_height_cm": null, "profile_age_years": null, "profile_sex": null, "profile_cgm": null, "profile_insulin_pump": null, "profile_insulin_carb_ratio": null, "profile_correction_factor": null, "profile_hypoglycemia_unawareness": null, "profile_diagnosis_duration": null, "profile_knowledge_level": null, "profile_interaction_mode": null}, "confidence": 0.9}
 ''';
 
   final LlamaParent llamaParent;

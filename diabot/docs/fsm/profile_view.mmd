@@ -1,0 +1,21 @@
+%% fsm-contract: {"generalFields":["name","email","ageYears","sex","weightKg","heightCm"],"priorityGroups":[["diabetesType","cgm","insulinPump","insulinTypes"],["insulinCarbRatio","correctionFactor","hypoglycemiaUnawareness","diagnosisDuration"],["knowledgeLevel","interactionMode"],["exerciseProfile","mealPatterns","insulinUsagePatterns","learnedFacts"]],"avatarSources":["authenticated-photo","local-photo","picker-placeholder"],"knownOnly":true,"dynamic":true,"sort":"general-then-priority-ascending","completeness":"always-render","completenessScore":"priority-weighted-known-health-facts","globalStateChange":false,"lifecycleChange":false,"asksQuestions":false,"medicalReasoning":false}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart TD
+  USER[User] --> PROFILE[Profile Engine]
+  PROFILE --> RETRIEVE[Retrieve known profile information]
+  RETRIEVE --> AVATAR[Render authenticated or local photo]
+  AVATAR -->|no photo| PICKER[Round camera or gallery placeholder]
+  RETRIEVE --> KNOWN{Known value}
+  KNOWN -->|no| IGNORE[Ignore]
+  KNOWN -->|yes| GENERAL{General data}
+  GENERAL -->|yes| GENERAL_RENDER[Render Dados Gerais]
+  GENERAL -->|no| PRIORITY[Assign profile priority]
+  PRIORITY --> SORT[Sort by ascending priority]
+  SORT --> RENDER[Render known information]
+  IGNORE --> SCORE[Calculate completeness score]
+  GENERAL_RENDER --> SCORE
+  RENDER --> SCORE
+  SCORE --> COMPLETENESS[Render profile completeness]
+  COMPLETENESS --> END[End]
+
+  NOTE[Projection only: no unknown values, questions, new DiabotGlobalState, EventStatus, or medical reasoning]

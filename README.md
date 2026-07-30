@@ -81,7 +81,7 @@ Diabot is not a Flutter client for GlycoGuide. It is a separate Android-first pr
 - No insulin-dose calculation, treatment recommendation, emergency calling, live CGM feed, trend analysis, charts, CSV export, or cloud sync of health records.
 - `cgm` and `profile` events are recognized but do not yet have complete collection workflows.
 - The external Gemma model only extracts structured events. It does not generate the user-facing conversation. Without it, deterministic quick replies and bare numeric glucose entries still work; unconstrained free text is clarified instead.
-- The build number is intentionally bumped for test builds. A changed build number clears local preferences, Firebase/Google session, and Diabot SQLite data on launch.
+- Diabot preserves its local profile, SQLite data, and authentication session across build updates. Debug builds expose a confirmed in-app action to erase local test data when a clean onboarding run is needed.
 
 ### Requirements
 
@@ -123,6 +123,18 @@ The persisted Mermaid specifications live in [diabot/docs/fsm](diabot/docs/fsm).
 
 The Time Engine is a separate Diabot module that derives context from the current event stack and timestamped local history across 15-minute, 1-hour, 4-hour, 12-hour, and 24-hour windows. It supplies temporal facts to the Emergency Engine; temporal Priority and Knowledge rules must first be specified in Mermaid before implementation.
 
+The Profile Engine is a separate passive context module. It incrementally records explicitly stated profile facts from normal conversation, plus available authenticated identity data such as name, email, and profile-photo URL, as a local SQLite snapshot with fact-level confidence and a completeness score. It never creates a global state, runs a questionnaire, asks profile questions, makes medical reasoning, or produces recommendations. Missing profile information is only exposed to the Knowledge Engine as context.
+
+### Profile View
+
+The Diabot Profile View is a known-only projection of that local context. It places identity and the weighted completeness indicator at the top, shows name, e-mail, and general measurements in `Dados Gerais`, then presents available health facts in ascending `Prioridade` sections. Unknown fields are never rendered, and moving a fact into `Dados Gerais` does not alter its clinical completeness weight.
+
+An authenticated photo is shown when available. The user may alternatively select a local avatar from the camera or gallery; the selected file remains on the device and is only stored as a local profile reference. This is the only interaction in the view: it does not collect health facts or turn the screen into a profile questionnaire.
+
+![Validated Profile View on a Galaxy A56](diabot/docs/images/profile-view-a56.png)
+
+The screenshot was captured during device validation and anonymized before inclusion: identity and health values are redacted while the rendered hierarchy remains visible.
+
 ### FSM evolution
 
 The current kernel is designed to grow by modular event behavior without a new architectural redesign. Its global FSM, event lifecycle, emergency, priority, and knowledge engines remain separate. Begin each behavior change with complete Mermaid diagrams and the matching contract; then assess lifecycle, emergency, priority, and knowledge impact, add tests, and only then implement Dart.
@@ -141,6 +153,12 @@ diabot/              Independent Flutter Android-first application
   lib/orchestrator.dart
                      FSM transitions and event resolution
   lib/local_db.dart  SQLite storage and FSM audit gateway
+  lib/profile_engine.dart
+                     Passive evolving user-profile context
+  lib/profile_view.dart
+                     Known-only projection of profile context
+  lib/time_engine.dart
+                     Timestamped local event context
   lib/nlu.dart       Grammar-constrained semantic event extraction
   lib/rag.dart       Local retrieval-only education service
   lib/stt.dart       On-device speech-to-text service

@@ -14,7 +14,8 @@ import 'events.dart';
 /// same table.
 ///
 /// Nothing here ever leaves the device; there is no network sync.
-class LocalDatabase implements FsmStoreGateway, RecentEventReader {
+class LocalDatabase
+  implements FsmStoreGateway, RecentEventReader, ProfileSnapshotGateway {
   LocalDatabase._();
   static final LocalDatabase instance = LocalDatabase._();
 
@@ -27,7 +28,7 @@ class LocalDatabase implements FsmStoreGateway, RecentEventReader {
     final path = p.join(dir.path, 'diabot.db');
     final db = await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE events (
@@ -49,6 +50,13 @@ class LocalDatabase implements FsmStoreGateway, RecentEventReader {
             created_at TEXT NOT NULL
           )
         ''');
+        await db.execute('''
+          CREATE TABLE profile_snapshot (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            payload TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          )
+        ''');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -62,6 +70,15 @@ class LocalDatabase implements FsmStoreGateway, RecentEventReader {
               global_state TEXT NOT NULL,
               reason TEXT,
               created_at TEXT NOT NULL
+            )
+          ''');
+        }
+        if (oldVersion < 3) {
+          await db.execute('''
+            CREATE TABLE profile_snapshot (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              payload TEXT NOT NULL,
+              updated_at TEXT NOT NULL
             )
           ''');
         }
@@ -145,11 +162,38 @@ class LocalDatabase implements FsmStoreGateway, RecentEventReader {
     return db.query('fsm_audit', orderBy: 'id DESC', limit: limit);
   }
 
+  @override
+  Future<Map<String, dynamic>?> loadProfileSnapshot() async {
+    final db = await _open();
+    final rows = await db.query('profile_snapshot', where: 'id = 1', limit: 1);
+    if (rows.isEmpty) return null;
+    try {
+      return jsonDecode(rows.single['payload'] as String) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> saveProfileSnapshot(Map<String, dynamic> snapshot) async {
+    final db = await _open();
+    await db.insert(
+      'profile_snapshot',
+      {
+        'id': 1,
+        'payload': jsonEncode(snapshot),
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
   /// Wipes all locally stored data. Called by the build-number-triggered
   /// reset in main.dart during active testing.
   Future<void> clearAll() async {
     final db = await _open();
     await db.delete('events');
     await db.delete('fsm_audit');
+    await db.delete('profile_snapshot');
   }
 }

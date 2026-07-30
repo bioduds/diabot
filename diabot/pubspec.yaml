@@ -1,12 +1,9 @@
 name: diabot
 description: A simple diabetes education chat client for Ollama.
 publish_to: none
-# Bump the build number (the part after "+") before every debug build during
-# this active testing phase. On launch, the app compares this build number
-# against the last one it saw (stored in SharedPreferences) and, if it
-# changed, wipes all local app data (Firebase session + saved profile) so
-# each fresh test install starts from a clean login/onboarding flow.
-version: 0.1.0+22
+# Bump the build number before producing a device-test APK. Local profile
+# data is preserved across builds and can be cleared with the debug action.
+version: 0.1.0+25
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
@@ -19,6 +16,7 @@ dependencies:
   firebase_core: ^3.6.0
   firebase_auth: ^5.3.1
   google_sign_in: ^6.2.1
+  image_picker: ^1.1.2
   shared_preferences: ^2.3.2
   path_provider: ^2.1.4
   record: ^6.2.1

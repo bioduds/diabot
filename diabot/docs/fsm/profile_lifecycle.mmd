@@ -1,0 +1,18 @@
+%% fsm-contract: {"steps":["observed","merged","persisted","retrieved","photo-selected","projected","rendered"],"globalStateChange":false,"eventLifecycleChange":false,"asksQuestions":false}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+stateDiagram-v2
+  [*] --> observed: normal conversation provides an explicit fact
+  observed --> merged: ProfileEngine updates the fact and confidence
+  merged --> persisted: write local SQLite snapshot
+  persisted --> retrieved: future turn loads the current snapshot
+  retrieved --> merged: newer explicit fact
+  retrieved --> photo-selected: local avatar selected from camera or gallery
+  photo-selected --> persisted: save local photo reference
+  retrieved --> projected: known facts only, priority sorted
+  projected --> rendered: Profile View with completeness score
+
+  note right of merged
+    This is a profile-fact lifecycle,
+    not an EventStatus lifecycle.
+    No DiabotGlobalState changes.
+  end note

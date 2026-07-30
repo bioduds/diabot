@@ -1,6 +1,7 @@
 import 'events.dart';
 import 'initialization.dart';
 import 'nlu.dart';
+import 'profile_engine.dart';
 import 'user_profile.dart';
 
 /// A single response from [ConversationOrchestrator]: fixed, human-authored
@@ -42,13 +43,20 @@ class ConversationOrchestrator {
     this.onEducationRequest,
     InitializationModule? initializationModule,
     EmergencyEngine? emergencyEngine,
+    ProfileEngine? profileEngine,
   })  : _initializationModule = initializationModule ?? InitializationModule(),
-        _emergencyEngine = emergencyEngine ?? EmergencyEngine();
+        _emergencyEngine = emergencyEngine ?? EmergencyEngine(),
+        _profileEngine = profileEngine ?? ProfileEngine(
+          snapshotGateway: storeGateway is ProfileSnapshotGateway
+            ? storeGateway as ProfileSnapshotGateway
+              : null,
+        );
 
   final FsmStoreGateway? storeGateway;
   final EducationAnswer? onEducationRequest;
   final InitializationModule _initializationModule;
   final EmergencyEngine _emergencyEngine;
+  final ProfileEngine _profileEngine;
 
   static const Map<String, EventType> _clarificationShortcuts = {
     'uma refeição': EventType.meal,
@@ -80,6 +88,7 @@ class ConversationOrchestrator {
 
   String _emergencyReason = '';
   final Map<String, dynamic> _emergencyData = {};
+  ProfileContext? _profileContext;
 
   DiabotGlobalState get state => _state;
 
@@ -206,7 +215,11 @@ class ConversationOrchestrator {
     for (final type in extraction.events) {
       _eventStack.add(EventInstance(
         type: type,
-        data: {...entities, 'raw_text': rawText},
+        data: {
+          ...entities,
+          'raw_text': rawText,
+          '_parserConfidence': extraction.confidence,
+        },
         source: EventSource.semanticParser,
       ));
     }
@@ -228,6 +241,24 @@ class ConversationOrchestrator {
     if (raw['insulin_type'] != null) out['insulinType'] = raw['insulin_type'];
     if (raw['dose'] != null) out['dose'] = raw['dose'];
     if (raw['symptom_type'] != null) out['symptomType'] = raw['symptom_type'];
+    const profileEntityKeys = {
+      'profile_diabetes_type': 'diabetesType',
+      'profile_weight_kg': 'weightKg',
+      'profile_height_cm': 'heightCm',
+      'profile_age_years': 'ageYears',
+      'profile_sex': 'sex',
+      'profile_cgm': 'cgm',
+      'profile_insulin_pump': 'insulinPump',
+      'profile_insulin_carb_ratio': 'insulinCarbRatio',
+      'profile_correction_factor': 'correctionFactor',
+      'profile_hypoglycemia_unawareness': 'hypoglycemiaUnawareness',
+      'profile_diagnosis_duration': 'diagnosisDuration',
+      'profile_knowledge_level': 'knowledgeLevel',
+      'profile_interaction_mode': 'interactionMode',
+    };
+    for (final entry in profileEntityKeys.entries) {
+      if (raw[entry.key] != null) out[entry.value] = raw[entry.key];
+    }
     return out;
   }
 
@@ -239,7 +270,11 @@ class ConversationOrchestrator {
       return _resolveEmergency();
     }
 
-    final assessment = await _emergencyEngine.assess(_eventStack);
+    _profileContext = (await _profileEngine.enrich(_eventStack)).profile;
+    final assessment = await _emergencyEngine.assess(
+      _eventStack,
+      profileContext: _profileContext,
+    );
     if (assessment.isEmergency) {
       await _markStackEscalated(assessment.reason);
       _state = DiabotGlobalState.emergency;
@@ -297,7 +332,8 @@ class ConversationOrchestrator {
 
     final missing = KnowledgeEngine.missingFields(active.type, active.data);
     if (missing.isEmpty) {
-      if (active.data['_contextHandled'] != true) {
+        if (active.type != EventType.profile &&
+          active.data['_contextHandled'] != true) {
         _state = DiabotGlobalState.enrichingContext;
         _pendingFieldKey = '_contextOptIn';
         return const OrchestratorReply(

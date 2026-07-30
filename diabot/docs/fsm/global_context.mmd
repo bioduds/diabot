@@ -1,0 +1,22 @@
+%% fsm-contract: {"inputs":["event-stack","temporal-context","profile-context"],"outputs":["emergency","priority","knowledge","profile-view"],"profileConsumers":["emergency","priority","knowledge","profile-view"],"globalStateChange":false,"lifecycleChange":false}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  STACK[Event stack] --> TIME[Time Engine]
+  STACK --> PROFILE[Profile Engine]
+  AUTH[Authenticated user identity] --> PROFILE
+  SQLITE[SQLite event and profile history] --> TIME
+  SQLITE --> PROFILE
+  USER[Current user profile] --> PROFILE
+
+  TIME --> TEMPORAL[TemporalContext]
+  PROFILE --> PROFILE_CONTEXT[ProfileContext]
+  STACK --> GLOBAL[GlobalContext]
+  TEMPORAL --> GLOBAL
+  PROFILE_CONTEXT --> GLOBAL
+
+  GLOBAL --> EMERGENCY[Emergency Engine]
+  GLOBAL --> PRIORITY[Priority Engine]
+  GLOBAL --> KNOWLEDGE[Knowledge Engine]
+  GLOBAL --> PROFILE_VIEW[Profile View projection]
+
+  NOTE[Context enrichment is passive and does not change global state or event lifecycle]

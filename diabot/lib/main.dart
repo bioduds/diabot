@@ -2,11 +2,11 @@ import 'dart:async';
 import 'dart:io';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:llama_cpp_dart/llama_cpp_dart.dart';
-import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
@@ -16,14 +16,13 @@ import 'events.dart';
 import 'local_db.dart';
 import 'login_page.dart';
 import 'nlu.dart';
-import 'onboarding_page.dart';
 import 'orchestrator.dart';
+import 'profile_engine.dart';
+import 'profile_view.dart';
 import 'rag.dart';
 import 'stt.dart';
 import 'time_engine.dart';
 import 'user_profile.dart';
-
-const _kLastBuildNumberKey = 'diabot_last_build_number';
 
 /// Default on-device model file. It must be placed manually on the device
 /// (e.g. copied via USB or downloaded through the phone's browser) at this
@@ -52,30 +51,7 @@ void main() async {
   // never sits underneath the Android nav buttons.
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   await Firebase.initializeApp();
-  await _resetLocalDataOnNewBuild();
   runApp(const DiabotApp());
-}
-
-/// During active testing, every fresh debug install should start from a
-/// clean login/onboarding flow instead of reusing whatever Firebase session
-/// or saved [UserProfile] happened to be left over from a previous test
-/// round (`adb install -r` preserves all app data across reinstalls).
-///
-/// This compares the running build number (bumped in pubspec.yaml before
-/// each test build) against the last one seen, stored in SharedPreferences.
-/// If it changed, all local app data is wiped: the saved profile, and the
-/// cached Firebase/Google sign-in session.
-Future<void> _resetLocalDataOnNewBuild() async {
-  final info = await PackageInfo.fromPlatform();
-  final prefs = await SharedPreferences.getInstance();
-  final lastBuildNumber = prefs.getString(_kLastBuildNumberKey);
-  if (lastBuildNumber == info.buildNumber) return;
-
-  await prefs.clear();
-  await GoogleSignIn().signOut();
-  await FirebaseAuth.instance.signOut();
-  await LocalDatabase.instance.clearAll();
-  await prefs.setString(_kLastBuildNumberKey, info.buildNumber);
 }
 
 class DiabotApp extends StatelessWidget {
@@ -183,7 +159,6 @@ class _ChatPageState extends State<ChatPage> {
   bool _modelLoading = false;
   bool _isBootstrapping = true;
   String? _bootstrapError;
-  UserProfile _profile = UserProfile();
   final RagService _rag = RagService();
   // "Gemma listens, DIABOT talks": Gemma is only ever asked to extract
   // events + fields (see nlu.dart). All user-facing text comes from
@@ -221,7 +196,7 @@ class _ChatPageState extends State<ChatPage> {
       _isBootstrapping = true;
       _bootstrapError = null;
     });
-    final profile = await UserProfile.load();
+    final profile = await _loadProfileWithAuthenticatedIdentity();
     final modelReady = await _initLocalModel(
       _defaultModelPath,
       showError: false,
@@ -247,7 +222,6 @@ class _ChatPageState extends State<ChatPage> {
     }
     if (!mounted) return;
     setState(() {
-      _profile = profile;
       _isBootstrapping = false;
       if (onboardingReply != null) {
         _messages.add(Message(
@@ -264,15 +238,27 @@ class _ChatPageState extends State<ChatPage> {
     await _stt.ensureInitialized(language: profile.idioma).catchError((_) {});
   }
 
-  Future<void> _editProfile() async {
-    await Navigator.of(context).push(MaterialPageRoute(
-      builder: (_) => ProfileEditorPage(
-        existingProfile: _profile,
-        onDone: (updated) => Navigator.of(context).pop(updated),
-      ),
-    ));
+  Future<UserProfile> _loadProfileWithAuthenticatedIdentity() async {
     final profile = await UserProfile.load();
-    if (mounted) setState(() => _profile = profile);
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return profile;
+
+    var changed = false;
+    void fillIfEmpty(
+        String current, String? authenticated, void Function(String) set) {
+      final value = authenticated?.trim() ?? '';
+      if (current.isNotEmpty || value.isEmpty) return;
+      set(value);
+      changed = true;
+    }
+
+    fillIfEmpty(
+        profile.nome, user.displayName, (value) => profile.nome = value);
+    fillIfEmpty(profile.email, user.email, (value) => profile.email = value);
+    fillIfEmpty(
+        profile.fotoUrl, user.photoURL, (value) => profile.fotoUrl = value);
+    if (changed) await profile.save();
+    return profile;
   }
 
   /// Sends [forcedText] (a tapped quick-reply label) or, if omitted, the
@@ -419,11 +405,11 @@ class _ChatPageState extends State<ChatPage> {
       setState(() {
         _modelLoading = false;
       });
-        if (showError && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Erro ao inicializar modelo local: $e')));
-        }
-        return false;
+      if (showError && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Erro ao inicializar modelo local: $e')));
+      }
+      return false;
     }
 
     setState(() {
@@ -437,6 +423,36 @@ class _ChatPageState extends State<ChatPage> {
     setState(() {
       _messages.clear();
     });
+  }
+
+  Future<void> _clearDebugData() async {
+    final shouldClear = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Apagar dados de teste?'),
+        content: const Text(
+          'Isso apaga perfil, eventos, auditoria e sessão local deste dispositivo.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.delete_forever),
+            label: const Text('Apagar'),
+          ),
+        ],
+      ),
+    );
+    if (shouldClear != true) return;
+
+    await LocalDatabase.instance.clearAll();
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.clear();
+    await GoogleSignIn().signOut();
+    await FirebaseAuth.instance.signOut();
   }
 
   Future<void> _signOut() async {
@@ -628,6 +644,12 @@ class _ChatPageState extends State<ChatPage> {
       appBar: AppBar(
         title: const Text('Diabot'),
         actions: [
+          if (kDebugMode)
+            IconButton(
+              icon: const Icon(Icons.delete_forever_outlined),
+              onPressed: _clearDebugData,
+              tooltip: 'Apagar dados de teste',
+            ),
           IconButton(
             icon: const Icon(Icons.cloud_download_outlined),
             onPressed: () async {
@@ -646,7 +668,8 @@ class _ChatPageState extends State<ChatPage> {
                         onPressed: () => Navigator.of(ctx).pop(null),
                         child: const Text('Cancelar')),
                     ElevatedButton(
-                        onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+                        onPressed: () =>
+                            Navigator.of(ctx).pop(controller.text.trim()),
                         child: const Text('Iniciar')),
                   ],
                 ),
@@ -670,8 +693,14 @@ class _ChatPageState extends State<ChatPage> {
           ),
           IconButton(
             icon: const Icon(Icons.person_outline),
-            onPressed: _editProfile,
-            tooltip: 'Editar perfil',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => ProfileViewPage(
+                profileEngine: ProfileEngine(
+                  snapshotGateway: LocalDatabase.instance,
+                ),
+              ),
+            )),
+            tooltip: 'Ver perfil',
           ),
           IconButton(
             icon: const Icon(Icons.logout),
@@ -680,168 +709,172 @@ class _ChatPageState extends State<ChatPage> {
           ),
         ],
       ),
-        body: _isBootstrapping || _bootstrapError != null
+      body: _isBootstrapping || _bootstrapError != null
           ? _buildBootstrapBody()
           : Column(
-        children: [
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                final message = _messages[index];
-                final isUser = message.role == 'user';
-                final isLastAssistantMessage = !isUser &&
-                    !_isLoading &&
-                    index == _messages.length - 1;
-                final showQuickReplies = isLastAssistantMessage &&
-                    (message.quickReplies?.isNotEmpty ?? false);
-                final showNumericInput =
-                    isLastAssistantMessage && message.numericInputHint != null;
-                return Container(
-                  margin: const EdgeInsets.symmetric(vertical: 6),
-                  child: Column(
-                    crossAxisAlignment: isUser
-                        ? CrossAxisAlignment.end
-                        : CrossAxisAlignment.start,
-                    children: [
-                      Align(
-                        alignment: isUser
-                            ? Alignment.centerRight
-                            : Alignment.centerLeft,
-                        child: Container(
-                          padding: const EdgeInsets.all(14),
-                          decoration: BoxDecoration(
-                            color: isUser
-                                ? Theme.of(context)
-                                    .colorScheme
-                                    .primaryContainer
-                                : Theme.of(context)
-                                    .colorScheme
-                                    .surfaceContainerHighest,
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          child: Text(
-                            message.text,
-                            style: TextStyle(
-                              color: isUser
-                                  ? Theme.of(context)
-                                      .colorScheme
-                                      .onPrimaryContainer
-                                  : Theme.of(context)
-                                      .colorScheme
-                                      .onSurfaceVariant,
-                            ),
-                          ),
-                        ),
-                      ),
-                      if (showQuickReplies)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8),
-                          child: Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              for (final option in message.quickReplies!)
-                                ActionChip(
-                                  label: Text(option),
-                                  onPressed: () => _sendMessage(option),
+              children: [
+                Expanded(
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _messages.length,
+                    itemBuilder: (context, index) {
+                      final message = _messages[index];
+                      final isUser = message.role == 'user';
+                      final isLastAssistantMessage = !isUser &&
+                          !_isLoading &&
+                          index == _messages.length - 1;
+                      final showQuickReplies = isLastAssistantMessage &&
+                          (message.quickReplies?.isNotEmpty ?? false);
+                      final showNumericInput = isLastAssistantMessage &&
+                          message.numericInputHint != null;
+                      return Container(
+                        margin: const EdgeInsets.symmetric(vertical: 6),
+                        child: Column(
+                          crossAxisAlignment: isUser
+                              ? CrossAxisAlignment.end
+                              : CrossAxisAlignment.start,
+                          children: [
+                            Align(
+                              alignment: isUser
+                                  ? Alignment.centerRight
+                                  : Alignment.centerLeft,
+                              child: Container(
+                                padding: const EdgeInsets.all(14),
+                                decoration: BoxDecoration(
+                                  color: isUser
+                                      ? Theme.of(context)
+                                          .colorScheme
+                                          .primaryContainer
+                                      : Theme.of(context)
+                                          .colorScheme
+                                          .surfaceContainerHighest,
+                                  borderRadius: BorderRadius.circular(14),
                                 ),
-                            ],
-                          ),
-                        ),
-                      if (showNumericInput)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8),
-                          child: SizedBox(
-                            width: 260,
-                            child: _NumericInputRow(
-                              hint: message.numericInputHint!,
-                              onSubmit: _sendMessage,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
-          if (_modelLoading)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  SizedBox(width: 8),
-                  Text('Carregando modelo local...'),
-                ],
-              ),
-            ),
-          if (_isLoading)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: LinearProgressIndicator(),
-            ),
-          const Divider(height: 1),
-          SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: _isRecording
-                        ? _buildRecordingIndicator()
-                        : _isTranscribing
-                            ? _buildTranscribingIndicator()
-                            : TextField(
-                                controller: _controller,
-                                decoration: const InputDecoration(
-                                  hintText:
-                                      'Escreva aqui ou clique no microfone '
-                                      'para falar',
-                                  border: OutlineInputBorder(),
+                                child: Text(
+                                  message.text,
+                                  style: TextStyle(
+                                    color: isUser
+                                        ? Theme.of(context)
+                                            .colorScheme
+                                            .onPrimaryContainer
+                                        : Theme.of(context)
+                                            .colorScheme
+                                            .onSurfaceVariant,
+                                  ),
                                 ),
-                                minLines: 1,
-                                maxLines: 4,
-                                textInputAction: TextInputAction.send,
-                                onSubmitted: (_) => _sendMessage(),
                               ),
+                            ),
+                            if (showQuickReplies)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    for (final option in message.quickReplies!)
+                                      ActionChip(
+                                        label: Text(option),
+                                        onPressed: () => _sendMessage(option),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            if (showNumericInput)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: SizedBox(
+                                  width: 260,
+                                  child: _NumericInputRow(
+                                    hint: message.numericInputHint!,
+                                    onSubmit: _sendMessage,
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+                      );
+                    },
                   ),
-                const SizedBox(width: 8),
-                IconButton.filledTonal(
-                  onPressed:
-                      (_isLoading || _isTranscribing) ? null : _toggleRecording,
-                  style: _isRecording
-                      ? IconButton.styleFrom(
-                          backgroundColor:
-                              Theme.of(context).colorScheme.errorContainer,
-                        )
-                      : null,
-                  icon: Icon(_isRecording ? Icons.stop : Icons.mic),
-                  tooltip: _isRecording
-                      ? 'Parar grava\u00e7\u00e3o'
-                      : 'Gravar mensagem de voz',
                 ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed: (_isLoading || _isRecording || _isTranscribing)
-                      ? null
-                      : _sendMessage,
-                  child: const Text('Enviar'),
+                if (_modelLoading)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        SizedBox(width: 8),
+                        Text('Carregando modelo local...'),
+                      ],
+                    ),
+                  ),
+                if (_isLoading)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: LinearProgressIndicator(),
+                  ),
+                const Divider(height: 1),
+                SafeArea(
+                  top: false,
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: _isRecording
+                              ? _buildRecordingIndicator()
+                              : _isTranscribing
+                                  ? _buildTranscribingIndicator()
+                                  : TextField(
+                                      controller: _controller,
+                                      decoration: const InputDecoration(
+                                        hintText:
+                                            'Escreva aqui ou clique no microfone '
+                                            'para falar',
+                                        border: OutlineInputBorder(),
+                                      ),
+                                      minLines: 1,
+                                      maxLines: 4,
+                                      textInputAction: TextInputAction.send,
+                                      onSubmitted: (_) => _sendMessage(),
+                                    ),
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton.filledTonal(
+                          onPressed: (_isLoading || _isTranscribing)
+                              ? null
+                              : _toggleRecording,
+                          style: _isRecording
+                              ? IconButton.styleFrom(
+                                  backgroundColor: Theme.of(context)
+                                      .colorScheme
+                                      .errorContainer,
+                                )
+                              : null,
+                          icon: Icon(_isRecording ? Icons.stop : Icons.mic),
+                          tooltip: _isRecording
+                              ? 'Parar grava\u00e7\u00e3o'
+                              : 'Gravar mensagem de voz',
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          onPressed:
+                              (_isLoading || _isRecording || _isTranscribing)
+                                  ? null
+                                  : _sendMessage,
+                          child: const Text('Enviar'),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-                ],
-              ),
+                const SizedBox(height: 8),
+              ],
             ),
-          ),
-          const SizedBox(height: 8),
-        ],
-      ),
     );
   }
 }

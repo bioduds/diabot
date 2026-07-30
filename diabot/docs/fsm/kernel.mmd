@@ -33,12 +33,15 @@ flowchart TD
   FILL --> STACK
 
   STACK --> TIME[Time Engine builds temporal context]
-  TIME --> GATE[Emergency gate]
+  TIME --> PROFILE_ENGINE[Profile Engine enriches profile context]
+  PROFILE_ENGINE --> GLOBAL_CONTEXT[Global Context]
+  GLOBAL_CONTEXT --> GATE[Emergency gate]
   GATE -->|preempt| EMERGENCY[emergency]
   EMERGENCY --> EP
   GATE -->|clear| PRIORITIZING[prioritizing]
   PRIORITIZING --> ACTIVE[Priority selected event]
-  ACTIVE --> KNOWLEDGE[Knowledge engine]
+  GLOBAL_CONTEXT --> KNOWLEDGE[Knowledge engine]
+  ACTIVE --> KNOWLEDGE
   KNOWLEDGE -->|missing|required[waitingInformation]
   required --> USER
   KNOWLEDGE -->|complete| OPTIONAL[enrichingContext]

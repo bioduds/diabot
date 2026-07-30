@@ -12,6 +12,8 @@ class UserProfile {
 
   String idioma;
   String nome;
+  String email;
+  String fotoUrl;
   String peso;
   String tipoDiabetes;
   String tempoDiagnostico;
@@ -20,6 +22,8 @@ class UserProfile {
   UserProfile({
     this.idioma = '',
     this.nome = '',
+    this.email = '',
+    this.fotoUrl = '',
     this.peso = '',
     this.tipoDiabetes = '',
     this.tempoDiagnostico = '',
@@ -30,6 +34,8 @@ class UserProfile {
     return UserProfile(
       idioma: json['idioma'] as String? ?? '',
       nome: json['nome'] as String? ?? '',
+      email: json['email'] as String? ?? '',
+      fotoUrl: json['fotoUrl'] as String? ?? '',
       peso: json['peso'] as String? ?? '',
       tipoDiabetes: json['tipoDiabetes'] as String? ?? '',
       tempoDiagnostico: json['tempoDiagnostico'] as String? ?? '',
@@ -40,6 +46,8 @@ class UserProfile {
   Map<String, dynamic> toJson() => {
         'idioma': idioma,
         'nome': nome,
+        'email': email,
+        'fotoUrl': fotoUrl,
         'peso': peso,
         'tipoDiabetes': tipoDiabetes,
         'tempoDiagnostico': tempoDiagnostico,
@@ -58,8 +66,7 @@ class UserProfile {
     final raw = prefs.getString(_prefsKey);
     if (raw == null) return UserProfile();
     try {
-      return UserProfile.fromJson(
-          jsonDecode(raw) as Map<String, dynamic>);
+      return UserProfile.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     } catch (_) {
       return UserProfile();
     }
@@ -95,15 +102,36 @@ class UserProfile {
 String normalizeLanguageAnswer(String rawAnswer) {
   final normalized = rawAnswer.trim().toLowerCase();
   const knownLanguages = {
-    'português': 'pt', 'portugues': 'pt', 'pt': 'pt', 'pt-br': 'pt',
-    'inglês': 'en', 'ingles': 'en', 'english': 'en', 'en': 'en',
-    'espanhol': 'es', 'español': 'es', 'spanish': 'es', 'es': 'es',
-    'russo': 'ru', 'russian': 'ru', 'ru': 'ru',
-    'francês': 'fr', 'frances': 'fr', 'french': 'fr', 'fr': 'fr',
-    'alemão': 'de', 'alemao': 'de', 'german': 'de', 'de': 'de',
-    'italiano': 'it', 'italian': 'it', 'it': 'it',
+    'português': 'pt',
+    'portugues': 'pt',
+    'pt': 'pt',
+    'pt-br': 'pt',
+    'inglês': 'en',
+    'ingles': 'en',
+    'english': 'en',
+    'en': 'en',
+    'espanhol': 'es',
+    'español': 'es',
+    'spanish': 'es',
+    'es': 'es',
+    'russo': 'ru',
+    'russian': 'ru',
+    'ru': 'ru',
+    'francês': 'fr',
+    'frances': 'fr',
+    'french': 'fr',
+    'fr': 'fr',
+    'alemão': 'de',
+    'alemao': 'de',
+    'german': 'de',
+    'de': 'de',
+    'italiano': 'it',
+    'italian': 'it',
+    'it': 'it',
   };
-  if (knownLanguages.containsKey(normalized)) return knownLanguages[normalized]!;
+  if (knownLanguages.containsKey(normalized)) {
+    return knownLanguages[normalized]!;
+  }
   if (normalized.length == 2) return normalized;
   return 'pt';
 }
@@ -151,19 +179,22 @@ final List<OnboardingQuestion> onboardingQuestions = [
   ),
   OnboardingQuestion(
     field: 'tipoDiabetes',
-    question: 'Qual o tipo de diabetes você tem (Tipo 1, Tipo 2, Gestacional, outro)?',
+    question:
+        'Qual o tipo de diabetes você tem (Tipo 1, Tipo 2, Gestacional, outro)?',
     getter: (p) => p.tipoDiabetes,
     setter: (p, v) => p.tipoDiabetes = v,
   ),
   OnboardingQuestion(
     field: 'tempoDiagnostico',
-    question: 'Há quanto tempo você tem diabetes (ex: 3 anos, recém diagnosticado)?',
+    question:
+        'Há quanto tempo você tem diabetes (ex: 3 anos, recém diagnosticado)?',
     getter: (p) => p.tempoDiagnostico,
     setter: (p, v) => p.tempoDiagnostico = v,
   ),
   OnboardingQuestion(
     field: 'insulinas',
-    question: 'Quais insulinas você utiliza atualmente (basal e/ou bolus, se souber os nomes)?',
+    question:
+        'Quais insulinas você utiliza atualmente (basal e/ou bolus, se souber os nomes)?',
     getter: (p) => p.insulinas,
     setter: (p, v) => p.insulinas = v,
   ),

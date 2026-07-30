@@ -12,10 +12,14 @@ files=(
   lib/events.dart
   lib/initialization.dart
   lib/orchestrator.dart
+  lib/profile_engine.dart
+  lib/profile_view.dart
   lib/time_engine.dart
   test/fsm_mermaid_contract_test.dart
   test/initialization_test.dart
   test/orchestrator_test.dart
+  test/profile_engine_test.dart
+  test/profile_view_test.dart
   test/time_engine_test.dart
 )
 
