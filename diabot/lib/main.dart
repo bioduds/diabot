@@ -1,30 +1,55 @@
-import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:http/http.dart' as http;
 import 'package:llama_cpp_dart/llama_cpp_dart.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'events.dart';
+import 'local_db.dart';
 import 'login_page.dart';
+import 'nlu.dart';
 import 'onboarding_page.dart';
+import 'orchestrator.dart';
 import 'rag.dart';
 import 'stt.dart';
 import 'user_profile.dart';
 
 const _kLastBuildNumberKey = 'diabot_last_build_number';
 
+/// Default on-device model file. It must be placed manually on the device
+/// (e.g. copied via USB or downloaded through the phone's browser) at this
+/// exact path — the app never fetches it over the network. Using the base
+/// (pretrained-only, non-instruction-tuned) Gemma 3 4B checkpoint here per
+/// request. Gemma 3 4B needs ~2.5GB of RAM/storage and is noticeably
+/// slower per classification than the 1B model. If the file is missing,
+/// `_initLocalModel` fails fast with a clear SnackBar instead of hanging,
+/// so it's safe to leave this pointed at 4B even before the file is
+/// copied over.
+///
+/// NOTE: this model is intentionally NOT auto-loaded at startup anymore.
+/// Loading a 2.36GB model natively while the STT (Whisper) and RAG
+/// (embedding) models are also loading concurrently caused a native
+/// out-of-memory crash on a mid-range device (Galaxy A56) — a crash that
+/// Dart's try/catch cannot intercept because it happens inside the native
+/// llama.cpp/mmap code, not in Dart. Use the cloud-download icon in the
+/// app bar to load it manually once the app is idle.
+const _defaultModelPath = '/sdcard/Download/gemma-3-4b-Q4_0.gguf';
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Hide the status/navigation bars like a typical full-screen Android app;
-  // swiping from the bottom edge temporarily reveals them again.
-  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+  // Modern edge-to-edge display: the status/navigation bars stay visible
+  // (rather than being hidden until a swipe), and app content is drawn
+  // behind them — Scaffolds below add bottom SafeArea padding so content
+  // never sits underneath the Android nav buttons.
+  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   await Firebase.initializeApp();
   await _resetLocalDataOnNewBuild();
   runApp(const DiabotApp());
@@ -48,6 +73,7 @@ Future<void> _resetLocalDataOnNewBuild() async {
   await prefs.clear();
   await GoogleSignIn().signOut();
   await FirebaseAuth.instance.signOut();
+  await LocalDatabase.instance.clearAll();
   await prefs.setString(_kLastBuildNumberKey, info.buildNumber);
 }
 
@@ -137,8 +163,16 @@ class ChatPage extends StatefulWidget {
 class Message {
   final String role;
   final String text;
+  // Optional tappable quick-reply options attached to an assistant message
+  // (e.g. "Sim" / "Não", "Leve" / "Moderada" / "Intensa"). Tapping one
+  // feeds its label back through the same pipeline as typed/voice input.
+  final List<String>? quickReplies;
+  // Optional hint label for a numeric data-entry field shown instead of
+  // (or alongside) quick replies, when the orchestrator's next question
+  // expects a value (grams of carbs, a glucose reading, insulin units).
+  final String? numericInputHint;
 
-  Message(this.role, this.text);
+  Message(this.role, this.text, {this.quickReplies, this.numericInputHint});
 }
 
 class _ChatPageState extends State<ChatPage> {
@@ -152,6 +186,17 @@ class _ChatPageState extends State<ChatPage> {
   bool _modelLoading = false;
   UserProfile _profile = UserProfile();
   final RagService _rag = RagService();
+  // "Gemma listens, DIABOT talks": Gemma is only ever asked to extract
+  // events + fields (see nlu.dart). All user-facing text comes from
+  // ConversationOrchestrator's fixed template responses, except the one
+  // FSM-approved exception (a `question` event resolved via RAG lookup in
+  // `_answerEducationQuestion` below). Every completed event is persisted
+  // to the local SQLite event log.
+  late final ConversationOrchestrator _orchestrator = ConversationOrchestrator(
+    storeGateway: LocalDatabase.instance,
+    onEducationRequest: _answerEducationQuestion,
+    emergencyEngine: EmergencyEngine(history: LocalDatabase.instance),
+  );
 
   // Voice input (mic button) state. Recording is captured as a 16kHz mono
   // WAV file and transcribed on-device with Whisper Tiny (via SttService)
@@ -166,18 +211,30 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
-    _loadProfile().then((_) {
-      // Fire-and-forget: loads the on-device Whisper Tiny STT model,
-      // forcing decoding to the user's known language (from onboarding /
-      // device locale) so it doesn't randomly guess Portuguese, English,
-      // or Russian per recording. If it fails, the mic button will simply
-      // show an error when tapped.
-      _stt.ensureInitialized(language: _profile.idioma).catchError((_) {});
+    _loadProfile().then((_) async {
+      // Loaded sequentially (not concurrently) to avoid piling up several
+      // large native allocations (RAG embeddings + Whisper STT + Gemma)
+      // at the exact same moment, which previously caused a native
+      // out-of-memory crash on startup. Each one is still best-effort:
+      // a failure here doesn't block the app, it just disables that
+      // feature until retried.
+      //
+      // Loads the on-device embedding model + knowledge base. If it
+      // fails (e.g. low storage), RAG context is simply skipped and the
+      // chat still works with the base system prompt.
+      await _rag.ensureInitialized().catchError((_) {});
+      // Loads the on-device Whisper Tiny STT model, forcing decoding to
+      // the user's known language (from onboarding / device locale) so
+      // it doesn't randomly guess Portuguese, English, or Russian per
+      // recording. If it fails, the mic button will simply show an
+      // error when tapped.
+      await _stt
+          .ensureInitialized(language: _profile.idioma)
+          .catchError((_) {});
+      // The local Gemma 4B model is intentionally NOT auto-loaded here —
+      // see the doc comment on `_defaultModelPath` for why. Load it via
+      // the cloud-download icon in the app bar when ready.
     });
-    // Fire-and-forget: loads the on-device embedding model + knowledge base
-    // in the background. If it fails (e.g. low storage), RAG context is
-    // simply skipped and the chat still works with the base system prompt.
-    _rag.ensureInitialized().catchError((_) {});
   }
 
   Future<void> _loadProfile() async {
@@ -195,137 +252,91 @@ class _ChatPageState extends State<ChatPage> {
     await _loadProfile();
   }
 
-  Future<void> _sendMessage() async {
-    final prompt = _controller.text.trim();
+  /// Sends [forcedText] (a tapped quick-reply label) or, if omitted, the
+  /// current contents of the text field. Both typed/transcribed text and
+  /// quick-reply taps go through the exact same orchestrator pipeline.
+  Future<void> _sendMessage([String? forcedText]) async {
+    final prompt = forcedText ?? _controller.text.trim();
     if (prompt.isEmpty) return;
 
     setState(() {
       _messages.add(Message('user', prompt));
-      _controller.clear();
+      if (forcedText == null) _controller.clear();
       _isLoading = true;
     });
 
-    final responseText = await _queryOllama(prompt);
+    final reply = await _getOrchestratorReply(prompt);
 
     setState(() {
-      _messages.add(Message('assistant', responseText));
+      _messages.add(
+        Message('assistant', reply.text, quickReplies: reply.quickReplies),
+      );
       _isLoading = false;
     });
   }
 
-  static const _baseSystemPrompt =
-      'Você é uma IA especializada em educação sobre diabetes. Seu objetivo é ensinar, explicar conceitos e auxiliar o usuário a compreender melhor sua condição. Você nunca substitui profissionais de saúde. Você deverá: ensinar; explicar; acolher; reconhecer incertezas; adaptar a profundidade das respostas ao contexto apresentado. Você NÃO deverá: prescrever tratamentos; substituir profissionais de saúde; apresentar certezas inexistentes; realizar recomendações perigosas ou categóricas. Seu principal objetivo é aumentar a autonomia do usuário ao longo do tempo.';
-
-  /// Combines the base instructions with the saved user profile and any
-  /// retrieved RAG knowledge-base chunks into a single system prompt.
-  Future<String> _buildSystemPrompt(String userPrompt) async {
-    final parts = <String>[_baseSystemPrompt];
-    final profileSummary = _profile.toPromptSummary();
-    if (profileSummary.isNotEmpty) parts.add(profileSummary);
-
-    final ragChunks = await _rag.retrieve(userPrompt);
-    if (ragChunks.isNotEmpty) {
-      parts.add('Conteúdo de referência (use se for relevante para a '
-          'pergunta, não mencione que veio de uma "base de dados"):\n'
-          '- ${ragChunks.join('\n- ')}');
-    }
-
-    return parts.join('\n\n');
+  /// Routes [prompt] through the on-device event parser + the FSM
+  /// (`ConversationOrchestrator`). Gemma never generates the text shown to
+  /// the user directly — see nlu.dart / orchestrator.dart.
+  Future<OrchestratorReply> _getOrchestratorReply(String prompt) async {
+    final parent = _llamaParent;
+    final classifier = parent != null && parent.status == LlamaStatus.ready
+        ? IntentClassifier(parent)
+        : null;
+    return _orchestrator.respond(prompt, classifier);
   }
 
-  Future<String> _queryOllama(String prompt) async {
-    final systemPrompt = await _buildSystemPrompt(prompt);
-
-    // If an on-device LlamaParent is initialized, use it.
-    if (_llamaParent != null && _llamaParent!.status == LlamaStatus.ready) {
-      final chatHistory = ChatHistory();
-      chatHistory.addMessage(role: Role.system, content: systemPrompt);
-      chatHistory.addMessage(role: Role.user, content: prompt);
-
-      // Prepare to capture streaming tokens and completion
-      final completer = Completer<void>();
-      final buffer = StringBuffer();
-
-      // token stream
-      _tokenSub = _llamaParent!.stream.listen((token) {
-        buffer.write(token);
-      }, onError: (e) {
-        // ignore stream errors here
-      });
-
-      // completion events
-      _compSub = _llamaParent!.completions.listen((event) {
-        if (event.success) {
-          if (!completer.isCompleted) completer.complete();
-        } else {
-          if (!completer.isCompleted) completer.complete();
-        }
-      });
-
-      // send prompt
-      try {
-        final promptText = chatHistory.exportFormat(ChatFormat.gemma,
-            leaveLastAssistantOpen: true);
-        await _llamaParent!.sendPrompt(promptText);
-
-        // wait for completion or timeout
-        await completer.future.timeout(const Duration(seconds: 60),
-            onTimeout: () {});
-      } catch (e) {
-        // fallthrough to return error
-      }
-
-      // cleanup
-      await _tokenSub?.cancel();
-      await _compSub?.cancel();
-      _tokenSub = null;
-      _compSub = null;
-
-      final result = buffer.toString().trim();
-      return result.isEmpty
-          ? 'Erro: modelo local não retornou texto.'
-          : result;
+  /// The FSM's single approved exception: a `question` event delegates
+  /// here for a free-text answer. The loaded model's sampler is fixed to
+  /// the classifier's JSON grammar for its whole lifetime (see
+  /// `_initLocalModel`), so it cannot also generate free text — this
+  /// returns the most relevant retrieved knowledge instead of an LLM
+  /// generation until a separate, non-grammar-constrained model path
+  /// exists for education answers.
+  Future<String> _answerEducationQuestion(String question) async {
+    final chunks = await _rag.retrieve(question);
+    if (chunks.isEmpty) {
+      return 'Ainda não tenho uma resposta para isso.';
     }
-
-    // Fallback: call remote Ollama-compatible HTTP endpoint (useful for desktop testing)
-    const url = 'http://127.0.0.1:11434/v1/chat/completions';
-    final payload = {
-      'model': 'gemma3:1b',
-      'messages': [
-        {
-          'role': 'system',
-          'content': systemPrompt,
-        },
-        {
-          'role': 'user',
-          'content': prompt,
-        },
-      ],
-      'max_tokens': 256,
-    };
-
-    final http.Response response = await http.post(
-      Uri.parse(url),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(payload),
-    );
-
-    if (response.statusCode != 200) {
-      return 'Erro: não foi possível conectar ao Ollama. Verifique se o servidor está rodando em localhost:11434.';
-    }
-
-    final data = jsonDecode(response.body) as Map<String, dynamic>;
-    final choices = data['choices'] as List<dynamic>?;
-    if (choices == null || choices.isEmpty) {
-      return 'Erro: resposta inesperada do Ollama.';
-    }
-
-    final message = choices.first['message'] as Map<String, dynamic>?;
-    return message?['content']?.toString() ?? 'Erro: resposta vazia.';
+    return chunks.first;
   }
 
   Future<void> _initLocalModel(String modelPath) async {
     if (_llamaParent != null) return;
+
+    // Android's scoped storage blocks native mmap/open() access to
+    // /sdcard paths unless "All files access" is granted — a special
+    // app-op the user must toggle in system Settings, it cannot be
+    // granted via a normal permission dialog. Without it, Dart-level
+    // `existsSync()` can still succeed while llama.cpp's native file open
+    // fails with an opaque LlamaException, so this must be checked first.
+    if (!await Permission.manageExternalStorage.isGranted) {
+      final status = await Permission.manageExternalStorage.request();
+      if (!status.isGranted) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text(
+                  'É preciso conceder "Acesso a todos os arquivos" ao Diabot '
+                  'para carregar o modelo local. Conceda a permissão e tente '
+                  'novamente.')));
+        }
+        return;
+      }
+    }
+
+    // Fail fast with a clear message if the gguf simply isn't on the
+    // device yet, instead of letting llama.cpp try to mmap a missing/huge
+    // path natively, which can hang the UI thread and appear to crash.
+    if (!File(modelPath).existsSync()) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                'Modelo não encontrado em $modelPath. Copie o arquivo '
+                '.gguf para essa pasta no dispositivo antes de continuar.')));
+      }
+      return;
+    }
+
     setState(() {
       _modelLoading = true;
     });
@@ -344,11 +355,33 @@ class _ChatPageState extends State<ChatPage> {
       ..nGpuLayers = 0
       ..mainGpu = -1;
 
+    // The multi-event few-shot system prompt (see IntentClassifier) is
+    // ~1200 tokens on its own — nCtx must comfortably exceed prompt +
+    // user text + generated JSON, or the model has zero room left to
+    // generate anything and silently returns an empty completion (this
+    // previously caused every message to fall back to "unknown", not a
+    // parsing bug). nPredict caps generation length so a rambling
+    // completion can't run on indefinitely.
+    final contextParams = ContextParams()
+      ..nCtx = 2048
+      ..nBatch = 256
+      ..nUbatch = 256
+      ..nPredict = 200;
+
+    // Greedy + grammar-constrained: this model only ever does structured
+    // JSON extraction (never free-form chat), so deterministic decoding
+    // constrained to IntentClassifier.grammar is faster than sampling and
+    // guarantees valid, parseable output every time.
+    final samplerParams = SamplerParams()
+      ..greedy = true
+      ..grammarStr = IntentClassifier.grammar
+      ..grammarRoot = 'root';
+
     final loadCommand = LlamaLoad(
       path: modelPath,
       modelParams: modelParams,
-      contextParams: ContextParams(),
-      samplingParams: SamplerParams(),
+      contextParams: contextParams,
+      samplingParams: samplerParams,
     );
 
     final parent = LlamaParent(loadCommand);
@@ -529,8 +562,7 @@ class _ChatPageState extends State<ChatPage> {
           IconButton(
             icon: const Icon(Icons.cloud_download_outlined),
             onPressed: () async {
-              final controller = TextEditingController(
-                  text: '/sdcard/Download/gemma-3-1b-it-Q4_0.gguf');
+              final controller = TextEditingController(text: _defaultModelPath);
               final path = await showDialog<String>(
                 context: context,
                 builder: (ctx) => AlertDialog(
@@ -588,59 +620,128 @@ class _ChatPageState extends State<ChatPage> {
               itemBuilder: (context, index) {
                 final message = _messages[index];
                 final isUser = message.role == 'user';
+                final isLastAssistantMessage = !isUser &&
+                    !_isLoading &&
+                    index == _messages.length - 1;
+                final showQuickReplies = isLastAssistantMessage &&
+                    (message.quickReplies?.isNotEmpty ?? false);
+                final showNumericInput =
+                    isLastAssistantMessage && message.numericInputHint != null;
                 return Container(
                   margin: const EdgeInsets.symmetric(vertical: 6),
-                  alignment:
-                      isUser ? Alignment.centerRight : Alignment.centerLeft,
-                  child: Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: isUser
-                          ? Theme.of(context).colorScheme.primaryContainer
-                          : Theme.of(context).colorScheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Text(
-                      message.text,
-                      style: TextStyle(
-                        color: isUser
-                            ? Theme.of(context).colorScheme.onPrimaryContainer
-                            : Theme.of(context).colorScheme.onSurfaceVariant,
+                  child: Column(
+                    crossAxisAlignment: isUser
+                        ? CrossAxisAlignment.end
+                        : CrossAxisAlignment.start,
+                    children: [
+                      Align(
+                        alignment: isUser
+                            ? Alignment.centerRight
+                            : Alignment.centerLeft,
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: isUser
+                                ? Theme.of(context)
+                                    .colorScheme
+                                    .primaryContainer
+                                : Theme.of(context)
+                                    .colorScheme
+                                    .surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Text(
+                            message.text,
+                            style: TextStyle(
+                              color: isUser
+                                  ? Theme.of(context)
+                                      .colorScheme
+                                      .onPrimaryContainer
+                                  : Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
+                      if (showQuickReplies)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              for (final option in message.quickReplies!)
+                                ActionChip(
+                                  label: Text(option),
+                                  onPressed: () => _sendMessage(option),
+                                ),
+                            ],
+                          ),
+                        ),
+                      if (showNumericInput)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: SizedBox(
+                            width: 260,
+                            child: _NumericInputRow(
+                              hint: message.numericInputHint!,
+                              onSubmit: _sendMessage,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 );
               },
             ),
           ),
+          if (_modelLoading)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                  SizedBox(width: 8),
+                  Text('Carregando modelo local...'),
+                ],
+              ),
+            ),
           if (_isLoading)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 8),
               child: LinearProgressIndicator(),
             ),
           const Divider(height: 1),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: _isRecording
-                      ? _buildRecordingIndicator()
-                      : _isTranscribing
-                          ? _buildTranscribingIndicator()
-                          : TextField(
-                              controller: _controller,
-                              decoration: const InputDecoration(
-                                hintText:
-                                    'Digite sua pergunta sobre diabetes...',
-                                border: OutlineInputBorder(),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _isRecording
+                        ? _buildRecordingIndicator()
+                        : _isTranscribing
+                            ? _buildTranscribingIndicator()
+                            : TextField(
+                                controller: _controller,
+                                decoration: const InputDecoration(
+                                  hintText:
+                                      'Escreva aqui ou clique no microfone '
+                                      'para falar',
+                                  border: OutlineInputBorder(),
+                                ),
+                                minLines: 1,
+                                maxLines: 4,
+                                textInputAction: TextInputAction.send,
+                                onSubmitted: (_) => _sendMessage(),
                               ),
-                              minLines: 1,
-                              maxLines: 4,
-                              textInputAction: TextInputAction.send,
-                              onSubmitted: (_) => _sendMessage(),
-                            ),
-                ),
+                  ),
                 const SizedBox(width: 8),
                 IconButton.filledTonal(
                   onPressed:
@@ -663,12 +764,71 @@ class _ChatPageState extends State<ChatPage> {
                       : _sendMessage,
                   child: const Text('Enviar'),
                 ),
-              ],
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 8),
         ],
       ),
+    );
+  }
+}
+
+/// A small numeric text entry + send button, shown under the last
+/// assistant message when [ConversationOrchestrator] expects a data value
+/// (grams of carbs, a glucose reading, insulin units) rather than a fixed
+/// choice. Submitting feeds the typed value through the same
+/// `_sendMessage` pipeline as regular typed/voice/quick-reply input.
+class _NumericInputRow extends StatefulWidget {
+  final String hint;
+  final ValueChanged<String> onSubmit;
+
+  const _NumericInputRow({required this.hint, required this.onSubmit});
+
+  @override
+  State<_NumericInputRow> createState() => _NumericInputRowState();
+}
+
+class _NumericInputRowState extends State<_NumericInputRow> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final text = _controller.text.trim();
+    if (text.isEmpty) return;
+    widget.onSubmit(text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Expanded(
+          child: TextField(
+            controller: _controller,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: widget.hint,
+              border: const OutlineInputBorder(),
+            ),
+            textInputAction: TextInputAction.send,
+            onSubmitted: (_) => _submit(),
+          ),
+        ),
+        const SizedBox(width: 8),
+        IconButton.filledTonal(
+          onPressed: _submit,
+          icon: const Icon(Icons.send),
+        ),
+      ],
     );
   }
 }

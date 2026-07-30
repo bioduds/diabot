@@ -331,46 +331,50 @@ class _OnboardingPageState extends State<OnboardingPage> {
             ),
           ),
           const Divider(height: 1),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            child: Row(
-              children: [
-                Expanded(
-                  child: _isRecording
-                      ? _buildRecordingIndicator()
-                      : _isTranscribing
-                          ? _buildTranscribingIndicator()
-                          : TextField(
-                              controller: _controller,
-                              decoration: const InputDecoration(
-                                hintText: 'Digite sua resposta...',
-                                border: OutlineInputBorder(),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _isRecording
+                        ? _buildRecordingIndicator()
+                        : _isTranscribing
+                            ? _buildTranscribingIndicator()
+                            : TextField(
+                                controller: _controller,
+                                decoration: const InputDecoration(
+                                  hintText: 'Digite sua resposta...',
+                                  border: OutlineInputBorder(),
+                                ),
+                                textInputAction: TextInputAction.send,
+                                onSubmitted: (_) => _submitAnswer(),
                               ),
-                              textInputAction: TextInputAction.send,
-                              onSubmitted: (_) => _submitAnswer(),
-                            ),
-                ),
-                const SizedBox(width: 8),
-                IconButton.filledTonal(
-                  onPressed: _isTranscribing ? null : _toggleRecording,
-                  style: _isRecording
-                      ? IconButton.styleFrom(
-                          backgroundColor:
-                              Theme.of(context).colorScheme.errorContainer,
-                        )
-                      : null,
-                  icon: Icon(_isRecording ? Icons.stop : Icons.mic),
-                  tooltip: _isRecording
-                      ? 'Parar grava\u00e7\u00e3o'
-                      : 'Gravar resposta por voz',
-                ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed:
-                      (_isRecording || _isTranscribing) ? null : _submitAnswer,
-                  child: const Text('Enviar'),
-                ),
-              ],
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.filledTonal(
+                    onPressed: _isTranscribing ? null : _toggleRecording,
+                    style: _isRecording
+                        ? IconButton.styleFrom(
+                            backgroundColor:
+                                Theme.of(context).colorScheme.errorContainer,
+                          )
+                        : null,
+                    icon: Icon(_isRecording ? Icons.stop : Icons.mic),
+                    tooltip: _isRecording
+                        ? 'Parar grava\u00e7\u00e3o'
+                        : 'Gravar resposta por voz',
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: (_isRecording || _isTranscribing)
+                        ? null
+                        : _submitAnswer,
+                    child: const Text('Enviar'),
+                  ),
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 8),

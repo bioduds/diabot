@@ -6,7 +6,7 @@ publish_to: none
 # against the last one it saw (stored in SharedPreferences) and, if it
 # changed, wipes all local app data (Firebase session + saved profile) so
 # each fresh test install starts from a clean login/onboarding flow.
-version: 0.1.0+3
+version: 0.1.0+18
 
 environment:
   sdk: ">=3.4.0 <4.0.0"
@@ -25,6 +25,8 @@ dependencies:
   sherpa_onnx: ^1.13.4
   path: ^1.9.1
   package_info_plus: ^8.0.0
+  sqflite: ^2.3.3
+  permission_handler: ^11.3.1
 
 dev_dependencies:
   flutter_test:
