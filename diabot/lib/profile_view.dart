@@ -5,6 +5,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
+import 'app_theme.dart';
 import 'events.dart';
 import 'profile_engine.dart';
 
@@ -374,8 +375,10 @@ class _ProfileAvatar extends StatelessWidget {
     );
   }
 
-  Widget _placeholder(BuildContext context) => ColoredBox(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        child: const Center(child: Icon(Icons.add_a_photo_outlined, size: 36)),
+  Widget _placeholder(BuildContext context) => const ColoredBox(
+        color: DiabotPalette.surface,
+        child: Center(
+            child: Icon(Icons.add_a_photo_outlined,
+                size: 36, color: DiabotPalette.iconMuted)),
       );
 }

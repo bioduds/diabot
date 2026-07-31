@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:llama_cpp_dart/llama_cpp_dart.dart' as native;
 
@@ -37,6 +39,7 @@ class LocalLLMRuntime {
     final model = await FlutterGemma.getActiveModel(
       maxTokens: 2048,
       preferredBackend: PreferredBackend.cpu,
+      supportAudio: true,
     );
     return LocalLLMRuntime._(model);
   }
@@ -44,7 +47,23 @@ class LocalLLMRuntime {
   /// Runs one isolated completion for [prompt] and returns the model's raw
   /// text response. Throws on failure; callers (see `nlu.dart`) already
   /// treat any thrown error as an empty/unusable result.
-  Future<String> generate(String prompt) async {
+  Future<String> generate(String prompt) {
+    return _generate(Message.text(text: prompt, isUser: true));
+  }
+
+  /// Runs one isolated completion where [audioBytes] (a WAV file, 16kHz
+  /// mono, <=30s per Gemma 4's native audio input limit) is the spoken
+  /// content and [instructionText] is the surrounding prompt/instructions.
+  /// Gemma 4 is multimodal and extracts meaning from audio directly, so
+  /// callers no longer need a separate speech-to-text pass for this path.
+  Future<String> generateWithAudio(String instructionText, Uint8List audioBytes) {
+    return _generate(
+      Message.withAudio(text: instructionText, audioBytes: audioBytes, isUser: true),
+      enableAudioModality: true,
+    );
+  }
+
+  Future<String> _generate(Message message, {bool enableAudioModality = false}) async {
     if (_status == LLMStatus.disposed) {
       throw StateError('LocalLLMRuntime has been disposed.');
     }
@@ -53,9 +72,10 @@ class LocalLLMRuntime {
       temperature: 0,
       topK: 1,
       maxOutputTokens: 320,
+      enableAudioModality: enableAudioModality,
     );
     try {
-      await session.addQueryChunk(Message.text(text: prompt, isUser: true));
+      await session.addQueryChunk(message);
       final response = await session.getResponse();
       _status = LLMStatus.ready;
       return response;

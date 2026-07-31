@@ -5,6 +5,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_gemma_litertlm/flutter_gemma_litertlm.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -13,6 +14,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'app_theme.dart';
 import 'events.dart';
 import 'local_db.dart';
 import 'login_page.dart';
@@ -23,7 +25,6 @@ import 'orchestrator.dart';
 import 'profile_engine.dart';
 import 'profile_view.dart';
 import 'rag.dart';
-import 'stt.dart';
 import 'time_engine.dart';
 import 'ui_text.dart';
 import 'user_profile.dart';
@@ -73,10 +74,7 @@ class DiabotApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Diabot',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.green),
-        useMaterial3: true,
-      ),
+      theme: diabotTheme,
       home: const AuthGate(),
     );
   }
@@ -156,8 +154,17 @@ class Message {
   // (or alongside) quick replies, when the orchestrator's next question
   // expects a value (grams of carbs, a glucose reading, insulin units).
   final String? numericInputHint;
+  // Path to the recorded WAV file for a voice message, kept so the user
+  // can play back exactly what was sent to the model.
+  final String? audioPath;
+  final DateTime timestamp;
 
-  Message(this.role, this.text, {this.quickReplies, this.numericInputHint});
+  Message(this.role, this.text,
+      {this.quickReplies,
+      this.numericInputHint,
+      this.audioPath,
+      DateTime? timestamp})
+      : timestamp = timestamp ?? DateTime.now();
 }
 
 enum _InteractionMode { free, guided }
@@ -176,6 +183,14 @@ class _GuidedPrompt {
   final String question;
   final List<String> options;
   final String? numericInputHint;
+}
+
+enum _ChatMenuAction {
+  diagnostics,
+  clearDebugData,
+  initModel,
+  clearConversation,
+  signOut,
 }
 
 class _ChatPageState extends State<ChatPage> {
@@ -210,18 +225,26 @@ class _ChatPageState extends State<ChatPage> {
   );
 
   // Voice input (mic button) state. Recording is captured as a 16kHz mono
-  // WAV file and transcribed on-device with Whisper Tiny (via SttService)
-  // once recording stops.
+  // WAV file (<=30s, Gemma 4's native audio input limit) and sent to the
+  // on-device model directly — Gemma 4 is multimodal and extracts events
+  // from speech itself, so no separate speech-to-text pass is needed here
+  // (see `nlu.dart` / `llm_runtime.dart`).
   final AudioRecorder _audioRecorder = AudioRecorder();
-  final SttService _stt = SttService();
   bool _isRecording = false;
-  bool _isTranscribing = false;
   Duration _recordingElapsed = Duration.zero;
   Timer? _recordingTimer;
+
+  // Playback of a user's own recorded voice message, so they can confirm it
+  // sounds right immediately after sending it.
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  String? _playingAudioPath;
 
   @override
   void initState() {
     super.initState();
+    _audioPlayer.onPlayerComplete.listen((_) {
+      if (mounted) setState(() => _playingAudioPath = null);
+    });
     _bootstrapAfterLogin();
   }
 
@@ -277,7 +300,6 @@ class _ChatPageState extends State<ChatPage> {
     // These smaller local models begin only after the external GGUF is
     // ready, avoiding concurrent native model initialization.
     await _rag.ensureInitialized().catchError((_) {});
-    await _stt.ensureInitialized(language: profile.idioma).catchError((_) {});
   }
 
   Future<UserProfile> _loadProfileWithAuthenticatedIdentity() async {
@@ -304,9 +326,18 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   /// Sends [forcedText] (a tapped quick-reply label) or, if omitted, the
-  /// current contents of the text field. Both typed/transcribed text and
-  /// quick-reply taps go through the exact same orchestrator pipeline.
-  Future<void> _sendMessage([String? forcedText, bool fromGuided = false]) async {
+  /// current contents of the text field. Both typed text and quick-reply
+  /// taps go through the exact same orchestrator pipeline; when
+  /// [audioBytes] is set (a recorded voice message), it is sent to the
+  /// model directly instead of the placeholder [forcedText] shown in the
+  /// chat bubble. [audioPath] is kept on the bubble so the user can play
+  /// back exactly what was sent.
+  Future<void> _sendMessage([
+    String? forcedText,
+    bool fromGuided = false,
+    Uint8List? audioBytes,
+    String? audioPath,
+  ]) async {
     if (_isBootstrapping) return;
     final prompt = forcedText ?? _controller.text.trim();
     if (prompt.isEmpty) return;
@@ -321,12 +352,12 @@ class _ChatPageState extends State<ChatPage> {
     }
 
     setState(() {
-      _messages.add(Message('user', prompt));
+      _messages.add(Message('user', prompt, audioPath: audioPath));
       if (!fromGuided && forcedText == null) _controller.clear();
       _isLoading = true;
     });
 
-    final reply = await _getOrchestratorReply(prompt);
+    final reply = await _getOrchestratorReply(prompt, audioBytes: audioBytes);
     if (!mounted) return;
     _presentReply(reply);
   }
@@ -345,11 +376,12 @@ class _ChatPageState extends State<ChatPage> {
   void _presentReply(OrchestratorReply reply) {
     final guidedKind = reply.guidedFieldKind;
     setState(() {
-      if (guidedKind == null) {
-        _messages.add(
-          Message('assistant', reply.text, quickReplies: reply.quickReplies),
-        );
-      }
+      // The reply's question/confirmation text must always reach the chat
+      // log — guided mode only adds an input panel below it, it never
+      // renders `reply.text` itself.
+      _messages.add(
+        Message('assistant', reply.text, quickReplies: reply.quickReplies),
+      );
       _guidedPrompt = guidedKind == null
           ? null
           : _GuidedPrompt(
@@ -368,8 +400,12 @@ class _ChatPageState extends State<ChatPage> {
   /// Routes [prompt] through the on-device event parser + the FSM
   /// (`ConversationOrchestrator`). Gemma never generates the text shown to
   /// the user directly — see nlu.dart / orchestrator.dart.
-  Future<OrchestratorReply> _getOrchestratorReply(String prompt) async {
-    return _orchestrator.respond(prompt, _semanticInterpreter);
+  Future<OrchestratorReply> _getOrchestratorReply(
+    String prompt, {
+    Uint8List? audioBytes,
+  }) async {
+    return _orchestrator.respond(prompt, _semanticInterpreter,
+        audioBytes: audioBytes);
   }
 
   /// The FSM's single approved exception: a `question` event delegates
@@ -628,17 +664,30 @@ class _ChatPageState extends State<ChatPage> {
     _llmRuntime?.dispose();
     _semanticDiagnostics.dispose();
     _rag.dispose();
-    _stt.dispose();
     _recordingTimer?.cancel();
     _audioRecorder.dispose();
+    _audioPlayer.dispose();
     super.dispose();
   }
 
+  /// Plays back (or stops) the WAV recorded for a voice message, so the
+  /// user can confirm it captured what they intended to say.
+  Future<void> _toggleAudioPlayback(String path) async {
+    if (_playingAudioPath == path) {
+      await _audioPlayer.stop();
+      if (mounted) setState(() => _playingAudioPath = null);
+      return;
+    }
+    await _audioPlayer.stop();
+    setState(() => _playingAudioPath = path);
+    await _audioPlayer.play(DeviceFileSource(path));
+  }
+
   /// Starts or stops microphone recording when the mic button is tapped.
-  /// On stop, the recorded audio is transcribed on-device with Whisper
-  /// Tiny and the result is placed in the text field for the user to
-  /// review/edit before sending (rather than auto-sending), since a tiny
-  /// STT model can mishear domain terms like insulin brand names.
+  /// On stop, the recorded audio is sent straight to the on-device model
+  /// as an audio turn (see `_sendMessage`) instead of first transcribing
+  /// it to text \u2014 Gemma 4 is multimodal and understands speech directly.
+  /// Recording auto-stops at 30s, Gemma 4's native audio input limit.
   Future<void> _toggleRecording() async {
     if (_isRecording) {
       final path = await _audioRecorder.stop();
@@ -646,32 +695,27 @@ class _ChatPageState extends State<ChatPage> {
       setState(() {
         _isRecording = false;
         _recordingElapsed = Duration.zero;
-        _isTranscribing = path != null;
       });
       if (path != null && mounted) {
-        String text = '';
+        Uint8List? audioBytes;
         try {
-          text = await _stt.transcribeWavFile(path);
+          audioBytes = await File(path).readAsBytes();
         } catch (_) {
-          // Ignore; handled below via empty result.
+          // Ignore; handled below via null result.
         }
         if (!mounted) return;
-        setState(() {
-          _isTranscribing = false;
-          if (text.isNotEmpty) {
-            _controller.text = text;
-          }
-        });
-        if (text.isEmpty) {
+        if (audioBytes == null || audioBytes.isEmpty) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
-                'Não consegui entender o áudio. Tente novamente ou digite '
+                'Não consegui capturar o áudio. Tente novamente ou digite '
                 'sua mensagem.',
               ),
             ),
           );
+          return;
         }
+        await _sendMessage('🎤 Mensagem de voz', false, audioBytes, path);
       }
       return;
     }
@@ -706,6 +750,9 @@ class _ChatPageState extends State<ChatPage> {
     _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
       setState(() => _recordingElapsed += const Duration(seconds: 1));
+      if (_recordingElapsed >= const Duration(seconds: 30)) {
+        _toggleRecording();
+      }
     });
   }
 
@@ -715,50 +762,31 @@ class _ChatPageState extends State<ChatPage> {
     return '$minutes:$seconds';
   }
 
-  /// Replaces the text field while recording, showing a pulsing mic icon
-  /// and elapsed time instead of a keyboard.
-  Widget _buildRecordingIndicator() {
-    return Container(
-      height: 48,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        border: Border.all(color: Theme.of(context).colorScheme.outline),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.fiber_manual_record,
-              color: Theme.of(context).colorScheme.error, size: 14),
-          const SizedBox(width: 8),
-          const Text('Gravando...'),
-          const Spacer(),
-          Text(_formatDuration(_recordingElapsed)),
-        ],
-      ),
-    );
+  String _formatMessageTime(DateTime dt) {
+    final hour = dt.hour.toString().padLeft(2, '0');
+    final minute = dt.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
   }
 
-  /// Shown briefly after recording stops, while Whisper Tiny transcribes
-  /// the audio on-device.
-  Widget _buildTranscribingIndicator() {
-    return Container(
-      height: 48,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        border: Border.all(color: Theme.of(context).colorScheme.outline),
-        borderRadius: BorderRadius.circular(4),
-      ),
-      child: Row(
-        children: const [
-          SizedBox(
-            width: 14,
-            height: 14,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-          SizedBox(width: 8),
-          Text('Transcrevendo...'),
-        ],
-      ),
+  /// Replaces the text field while recording, showing a pulsing mic icon
+  /// and elapsed time instead of a keyboard. Embedded inside the pill
+  /// input container, so it carries no border/background of its own.
+  Widget _buildRecordingIndicator() {
+    return Row(
+      children: [
+        GestureDetector(
+          onTap: _toggleRecording,
+          child: const Icon(Icons.stop_circle,
+              color: DiabotPalette.offline, size: 22),
+        ),
+        const SizedBox(width: 10),
+        const Expanded(
+          child: Text('Gravando...',
+              style: TextStyle(color: DiabotPalette.textSecondary)),
+        ),
+        Text(_formatDuration(_recordingElapsed),
+            style: const TextStyle(color: DiabotPalette.textMuted)),
+      ],
     );
   }
 
@@ -802,63 +830,66 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   Widget build(BuildContext context) {
+    final modelReady = _llmRuntime != null;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Diabot'),
-        actions: [
-          if (kDebugMode)
-            IconButton(
-              icon: const Icon(Icons.bug_report_outlined),
-              onPressed: _showSemanticDiagnostics,
-              tooltip: 'Diagnóstico da interpretação',
+        titleSpacing: 0,
+        title: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: const BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: DiabotPalette.accentGradient,
+              ),
+              child: const Icon(Icons.health_and_safety_rounded,
+                  color: Colors.white, size: 20),
             ),
-          if (kDebugMode)
-            IconButton(
-              icon: const Icon(Icons.delete_forever_outlined),
-              onPressed: _clearDebugData,
-              tooltip: 'Apagar dados de teste',
-            ),
-          IconButton(
-            icon: const Icon(Icons.cloud_download_outlined),
-            onPressed: () async {
-              final controller = TextEditingController(text: _defaultModelPath);
-              final path = await showDialog<String>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('Inicializar modelo local'),
-                  content: TextField(
-                    controller: controller,
-                    decoration: const InputDecoration(
-                        labelText: 'Caminho do modelo no dispositivo'),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Diabot',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 16,
+                        color: DiabotPalette.textPrimary,
+                      )),
+                  Row(
+                    children: [
+                      Container(
+                        width: 6,
+                        height: 6,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: modelReady
+                              ? DiabotPalette.online
+                              : DiabotPalette.offline,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _modelLoading
+                            ? 'Carregando modelo...'
+                            : modelReady
+                                ? 'Modelo local pronto'
+                                : 'Modelo não carregado',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: DiabotPalette.accent,
+                        ),
+                      ),
+                    ],
                   ),
-                  actions: [
-                    TextButton(
-                        onPressed: () => Navigator.of(ctx).pop(null),
-                        child: const Text('Cancelar')),
-                    ElevatedButton(
-                        onPressed: () =>
-                            Navigator.of(ctx).pop(controller.text.trim()),
-                        child: const Text('Iniciar')),
-                  ],
-                ),
-              );
-
-              if (path != null && path.isNotEmpty) {
-                await _initLocalModel(path);
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  content: Text(_llmRuntime != null
-                      ? 'Modelo local inicializado.'
-                      : 'Falha ao inicializar modelo.'),
-                ));
-              }
-            },
-            tooltip: 'Inicializar modelo local',
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
-            onPressed: _messages.isEmpty ? null : _clearConversation,
-            tooltip: 'Limpar conversa',
-          ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
           IconButton(
             icon: const Icon(Icons.person_outline),
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(
@@ -870,10 +901,93 @@ class _ChatPageState extends State<ChatPage> {
             )),
             tooltip: 'Ver perfil',
           ),
-          IconButton(
-            icon: const Icon(Icons.logout),
-            onPressed: _signOut,
-            tooltip: 'Sair',
+          PopupMenuButton<_ChatMenuAction>(
+            icon: const Icon(Icons.more_vert),
+            onSelected: (action) async {
+              switch (action) {
+                case _ChatMenuAction.diagnostics:
+                  _showSemanticDiagnostics();
+                case _ChatMenuAction.clearDebugData:
+                  _clearDebugData();
+                case _ChatMenuAction.initModel:
+                  final controller =
+                      TextEditingController(text: _defaultModelPath);
+                  final path = await showDialog<String>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text('Inicializar modelo local'),
+                      content: TextField(
+                        controller: controller,
+                        decoration: const InputDecoration(
+                            labelText: 'Caminho do modelo no dispositivo'),
+                      ),
+                      actions: [
+                        TextButton(
+                            onPressed: () => Navigator.of(ctx).pop(null),
+                            child: const Text('Cancelar')),
+                        ElevatedButton(
+                            onPressed: () =>
+                                Navigator.of(ctx).pop(controller.text.trim()),
+                            child: const Text('Iniciar')),
+                      ],
+                    ),
+                  );
+                  if (path != null && path.isNotEmpty) {
+                    await _initLocalModel(path);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text(_llmRuntime != null
+                            ? 'Modelo local inicializado.'
+                            : 'Falha ao inicializar modelo.'),
+                      ));
+                    }
+                  }
+                case _ChatMenuAction.clearConversation:
+                  if (_messages.isNotEmpty) _clearConversation();
+                case _ChatMenuAction.signOut:
+                  _signOut();
+              }
+            },
+            itemBuilder: (context) => [
+              if (kDebugMode)
+                const PopupMenuItem(
+                  value: _ChatMenuAction.diagnostics,
+                  child: ListTile(
+                    leading: Icon(Icons.bug_report_outlined),
+                    title: Text('Diagnóstico da interpretação'),
+                  ),
+                ),
+              if (kDebugMode)
+                const PopupMenuItem(
+                  value: _ChatMenuAction.clearDebugData,
+                  child: ListTile(
+                    leading: Icon(Icons.delete_forever_outlined),
+                    title: Text('Apagar dados de teste'),
+                  ),
+                ),
+              const PopupMenuItem(
+                value: _ChatMenuAction.initModel,
+                child: ListTile(
+                  leading: Icon(Icons.cloud_download_outlined),
+                  title: Text('Inicializar modelo local'),
+                ),
+              ),
+              PopupMenuItem(
+                value: _ChatMenuAction.clearConversation,
+                enabled: _messages.isNotEmpty,
+                child: const ListTile(
+                  leading: Icon(Icons.delete_outline),
+                  title: Text('Limpar conversa'),
+                ),
+              ),
+              const PopupMenuItem(
+                value: _ChatMenuAction.signOut,
+                child: ListTile(
+                  leading: Icon(Icons.logout),
+                  title: Text('Sair'),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -888,41 +1002,129 @@ class _ChatPageState extends State<ChatPage> {
                     itemBuilder: (context, index) {
                       final message = _messages[index];
                       final isUser = message.role == 'user';
-                      return Container(
-                        margin: const EdgeInsets.symmetric(vertical: 6),
-                        child: Column(
-                          crossAxisAlignment: isUser
-                              ? CrossAxisAlignment.end
-                              : CrossAxisAlignment.start,
-                          children: [
-                            Align(
-                              alignment: isUser
-                                  ? Alignment.centerRight
-                                  : Alignment.centerLeft,
-                              child: Container(
-                                padding: const EdgeInsets.all(14),
-                                decoration: BoxDecoration(
-                                  color: isUser
-                                      ? Theme.of(context)
-                                          .colorScheme
-                                          .primaryContainer
-                                      : Theme.of(context)
-                                          .colorScheme
-                                          .surfaceContainerHighest,
-                                  borderRadius: BorderRadius.circular(14),
-                                ),
-                                child: Text(
-                                  message.text,
-                                  style: TextStyle(
-                                    color: isUser
-                                        ? Theme.of(context)
-                                            .colorScheme
-                                            .onPrimaryContainer
-                                        : Theme.of(context)
-                                            .colorScheme
-                                            .onSurfaceVariant,
+                      final isFirstOfRun = index == 0 ||
+                          _messages[index - 1].role != message.role;
+                      final textColor =
+                          isUser ? Colors.white : DiabotPalette.textSecondary;
+                      final audioPath = message.audioPath;
+                      final isPlaying =
+                          audioPath != null && _playingAudioPath == audioPath;
+                      final bubbleContent = audioPath == null
+                          ? Text(message.text, style: TextStyle(color: textColor))
+                          : Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: Icon(
+                                    isPlaying
+                                        ? Icons.stop_circle
+                                        : Icons.play_circle_fill,
+                                    color: textColor,
                                   ),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                  tooltip: isPlaying
+                                      ? 'Parar'
+                                      : 'Ouvir mensagem de voz',
+                                  onPressed: () =>
+                                      _toggleAudioPlayback(audioPath),
                                 ),
+                                const SizedBox(width: 6),
+                                Flexible(
+                                  child: Text(message.text,
+                                      style: TextStyle(color: textColor)),
+                                ),
+                              ],
+                            );
+
+                      return Padding(
+                        padding:
+                            EdgeInsets.only(top: isFirstOfRun ? 10 : 2, bottom: 2),
+                        child: Row(
+                          mainAxisAlignment: isUser
+                              ? MainAxisAlignment.end
+                              : MainAxisAlignment.start,
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            if (!isUser)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: isFirstOfRun
+                                    ? Container(
+                                        width: 28,
+                                        height: 28,
+                                        decoration: const BoxDecoration(
+                                          shape: BoxShape.circle,
+                                          image: DecorationImage(
+                                            image: AssetImage(
+                                                'assets/images/diabot_icon_small.png'),
+                                            fit: BoxFit.cover,
+                                          ),
+                                        ),
+                                      )
+                                    : const SizedBox(width: 28),
+                              ),
+                            ConstrainedBox(
+                              constraints: BoxConstraints(
+                                maxWidth:
+                                    MediaQuery.of(context).size.width * 0.76,
+                              ),
+                              child: Column(
+                                crossAxisAlignment: isUser
+                                    ? CrossAxisAlignment.end
+                                    : CrossAxisAlignment.start,
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 14, vertical: 10),
+                                    decoration: BoxDecoration(
+                                      gradient: isUser
+                                          ? DiabotPalette.userBubbleGradient
+                                          : null,
+                                      color:
+                                          isUser ? null : DiabotPalette.surface,
+                                      border: isUser
+                                          ? null
+                                          : Border.all(
+                                              color:
+                                                  DiabotPalette.surfaceBorder),
+                                      borderRadius: BorderRadius.only(
+                                        topLeft: const Radius.circular(18),
+                                        topRight: const Radius.circular(18),
+                                        bottomLeft:
+                                            Radius.circular(isUser ? 18 : 4),
+                                        bottomRight:
+                                            Radius.circular(isUser ? 4 : 18),
+                                      ),
+                                    ),
+                                    child: bubbleContent,
+                                  ),
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 4, vertical: 2),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          _formatMessageTime(
+                                              message.timestamp),
+                                          style: const TextStyle(
+                                            color: DiabotPalette.textMuted,
+                                            fontSize: 11,
+                                          ),
+                                        ),
+                                        if (isUser) ...[
+                                          const SizedBox(width: 4),
+                                          const Text('✓✓',
+                                              style: TextStyle(
+                                                color: DiabotPalette.accent,
+                                                fontSize: 11,
+                                              )),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           ],
@@ -972,50 +1174,78 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Widget _buildFreeInput() {
+    final hasText = _controller.text.trim().isNotEmpty;
+    final canSend = !(_isLoading || _isRecording) && hasText;
     return SafeArea(
       top: false,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             Expanded(
-              child: _isRecording
-                  ? _buildRecordingIndicator()
-                  : _isTranscribing
-                      ? _buildTranscribingIndicator()
-                      : TextField(
-                          controller: _controller,
-                          decoration: const InputDecoration(
-                            hintText:
-                                'Escreva aqui ou clique no microfone para falar',
-                            border: OutlineInputBorder(),
+              child: Container(
+                constraints: const BoxConstraints(minHeight: 48),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                decoration: BoxDecoration(
+                  color: DiabotPalette.surface,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: DiabotPalette.surfaceBorder),
+                ),
+                child: _isRecording
+                    ? _buildRecordingIndicator()
+                    : Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _controller,
+                              decoration: const InputDecoration(
+                                hintText:
+                                    'Escreva aqui ou clique no microfone para falar',
+                                hintStyle:
+                                    TextStyle(color: DiabotPalette.iconMuted),
+                                border: InputBorder.none,
+                                isCollapsed: true,
+                              ),
+                              style: const TextStyle(
+                                  color: DiabotPalette.textPrimary),
+                              minLines: 1,
+                              maxLines: 4,
+                              textInputAction: TextInputAction.send,
+                              onChanged: (_) => setState(() {}),
+                              onSubmitted: (_) => _sendMessage(),
+                            ),
                           ),
-                          minLines: 1,
-                          maxLines: 4,
-                          textInputAction: TextInputAction.send,
-                          onSubmitted: (_) => _sendMessage(),
-                        ),
+                          IconButton(
+                            onPressed: _isLoading ? null : _toggleRecording,
+                            icon: const Icon(Icons.mic),
+                            color: DiabotPalette.iconMuted,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            tooltip: 'Gravar mensagem de voz',
+                          ),
+                        ],
+                      ),
+              ),
             ),
             const SizedBox(width: 8),
-            IconButton.filledTonal(
-              onPressed: (_isLoading || _isTranscribing)
-                  ? null
-                  : _toggleRecording,
-              style: _isRecording
-                  ? IconButton.styleFrom(
-                      backgroundColor:
-                          Theme.of(context).colorScheme.errorContainer,
-                    )
-                  : null,
-              icon: Icon(_isRecording ? Icons.stop : Icons.mic),
-              tooltip: _isRecording ? 'Parar gravação' : 'Gravar mensagem de voz',
-            ),
-            const SizedBox(width: 8),
-            ElevatedButton(
-              onPressed: (_isLoading || _isRecording || _isTranscribing)
-                  ? null
-                  : _sendMessage,
-              child: const Text('Enviar'),
+            GestureDetector(
+              onTap: canSend ? _sendMessage : null,
+              child: Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: canSend ? DiabotPalette.accentGradient : null,
+                  color: canSend ? null : DiabotPalette.surface,
+                ),
+                child: Icon(
+                  Icons.send,
+                  size: 18,
+                  color: canSend ? Colors.white : DiabotPalette.iconMuted,
+                ),
+              ),
             ),
           ],
         ),

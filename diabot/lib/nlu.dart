@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'events.dart';
 import 'llm_runtime.dart';
@@ -46,7 +47,12 @@ abstract interface class SemanticInterpreter {
   static const minimumConfidence =
       FsmContract.semanticInterpreterMinimumConfidence;
 
-  Future<NluExtraction> interpret(String userText);
+  /// Interprets [userText] (typed text or a quick-reply label). When
+  /// [audioBytes] is provided (a recorded voice message), it is sent to
+  /// the model directly instead of [userText] — Gemma 4 is multimodal and
+  /// extracts events from speech itself, so no separate transcription
+  /// step is needed.
+  Future<NluExtraction> interpret(String userText, {Uint8List? audioBytes});
 }
 
 /// On-device Gemma implementation of [SemanticInterpreter].
@@ -66,12 +72,19 @@ class IntentClassifier implements SemanticInterpreter {
     'unknown',
   };
 
+  // Content below is a hand-maintained digest of the true FSM contract
+  // (eventDefinitions in events.dart + docs/fsm/*.mmd), not a raw dump of
+  // the Mermaid files: loading ~17KB of diagram syntax at runtime would
+  // multiply prefill time on-device for no extraction benefit. Keep this
+  // in sync when eventDefinitions or docs/fsm/modules.mmd change.
   static const _systemPrompt = '''
-Extraia eventos de uma frase em português. Responda APENAS um JSON, sem conversa ou markdown.
+Extraia eventos de uma frase em português. Responda APENAS um JSON válido, sem markdown ou texto extra: {"events": [...], "entities": {...}, "confidence": 0-1}.
 
-Eventos: glucose (glicemia), meal (comeu, vai comer, fome ou alimentos), insulin, exercise, illness, ketones, medication, symptoms (tremor, suor frio, tontura, fraqueza, confusão, sede intensa), cgm, profile, question, unknown.
+Eventos (nomes exatos): glucose (nível/medição de glicemia), meal (comeu, vai comer, fome, alimentos), insulin (aplicou ou vai aplicar insulina, unidades), exercise (atividade física, intensidade/duração), illness (doença, febre, mal-estar geral — não sintomas de glicemia), ketones (medição de cetonas), medication (remédio que não é insulina), symptoms (tremor, suor frio, tontura, fraqueza, confusão, sede ou fome súbita — possível hipo/hiperglicemia), cgm (sensor de monitoramento contínuo), profile (dado pessoal estável: idade, peso, altura, tipo de diabetes, bomba de insulina etc, mencionado de passagem), question (pergunta educativa sobre diabetes, sem relatar um evento), unknown (nada acima se aplica claramente — conversa livre).
 
-Use os nomes exatos dos eventos. Em entities, emita somente dados encontrados: glucose, food, carbs_grams, duration, intensity, insulin_type, dose, symptom_type e campos profile_*. Se events for ["unknown"], inclua também free_reply com uma resposta curta, acolhedora e sem orientação médica. Não calcule, recomende nem invente dados.
+Entidades (emita só o que encontrar): glucose, food, carbs_grams, duration, intensity, insulin_type, dose, symptom_type, free_reply, profile_diabetes_type, profile_weight_kg, profile_height_cm, profile_age_years, profile_sex, profile_cgm, profile_insulin_pump, profile_insulin_carb_ratio, profile_correction_factor, profile_hypoglycemia_unawareness, profile_diagnosis_duration, profile_knowledge_level.
+
+Regras: pode haver mais de um evento na mesma frase; use confidence abaixo de 0.5 quando a frase for ambígua; se events for ["unknown"], inclua free_reply (resposta curta, acolhedora, sem orientação médica); nunca calcule dose, recomende tratamento ou invente dados.
 
 Entrada: agora a fome apertou
 Saída: {"events": ["meal"], "entities": {}, "confidence": 0.9}
@@ -81,6 +94,15 @@ Saída: {"events": ["meal", "insulin"], "entities": {"food": "pizza", "insulin_t
 
 Entrada: estou tremendo e suando frio
 Saída: {"events": ["symptoms"], "entities": {"symptom_type": "hypo"}, "confidence": 0.9}
+
+Entrada: minha glicose deu 180
+Saída: {"events": ["glucose"], "entities": {"glucose": 180}, "confidence": 0.95}
+
+Entrada: fui correr 30 minutos, intensidade moderada
+Saída: {"events": ["exercise"], "entities": {"duration": "30 minutos", "intensity": "moderada"}, "confidence": 0.9}
+
+Entrada: tenho 45 anos e peso 70kg
+Saída: {"events": ["profile"], "entities": {"profile_age_years": 45, "profile_weight_kg": 70}, "confidence": 0.85}
 
 Entrada: quero conversar sobre meu dia
 Saída: {"events": ["unknown"], "entities": {"free_reply": "Claro. Me conte o que aconteceu hoje."}, "confidence": 0.8}
@@ -92,11 +114,12 @@ Saída: {"events": ["unknown"], "entities": {"free_reply": "Claro. Me conte o qu
 
   IntentClassifier(this.llmRuntime, {this.diagnostics});
 
-  /// Interprets [userText]. Returns [NluExtraction.empty] on any failure
-  /// (model not ready, timeout, malformed JSON) so the orchestrator always
-  /// has a safe fallback instead of crashing or showing raw model output.
+  /// Interprets [userText], or a recorded voice message when [audioBytes]
+  /// is set. Returns [NluExtraction.empty] on any failure (model not
+  /// ready, timeout, malformed JSON) so the orchestrator always has a
+  /// safe fallback instead of crashing or showing raw model output.
   @override
-  Future<NluExtraction> interpret(String userText) async {
+  Future<NluExtraction> interpret(String userText, {Uint8List? audioBytes}) async {
     if (llmRuntime.status != LLMStatus.ready || _isInterpreting) {
       _logRuntimeOutcome(
         'skipped',
@@ -118,7 +141,9 @@ Saída: {"events": ["unknown"], "entities": {"free_reply": "Claro. Me conte o qu
     // the examples in the user turn gives the instruction-tuned model a
     // compact, consistent extraction task.
     final sanitized = userText.replaceAll('\n', ' ').trim();
-    final promptText = '$_systemPrompt\nEntrada: $sanitized\nSaída: ';
+    final promptText = audioBytes == null
+        ? '$_systemPrompt\nEntrada: $sanitized\nSaída: '
+        : '$_systemPrompt\nEntrada: (mensagem de voz a seguir)\nSaída: ';
 
     _isInterpreting = true;
     var completed = false;
@@ -126,7 +151,10 @@ Saída: {"events": ["unknown"], "entities": {"free_reply": "Claro. Me conte o qu
     String? failureType;
     var response = '';
     try {
-      response = await llmRuntime.generate(promptText).timeout(
+      final generation = audioBytes == null
+          ? llmRuntime.generate(promptText)
+          : llmRuntime.generateWithAudio(promptText, audioBytes);
+      response = await generation.timeout(
         const Duration(seconds: 30),
         onTimeout: () {
           timedOut = true;

@@ -1,8 +1,22 @@
 # Diabot
 
+<p align="center">
+  <img src="assets/images/diabot_logo_dark.png" alt="Diabot logo" width="260" />
+</p>
+
 Diabot is an Android-first Flutter prototype for structured diabetes event logging. Its finite-state-machine (FSM) kernel controls conversation flow; an optional on-device Gemma 4 E4B model (`.litertlm`, run via `flutter_gemma`) is limited to semantic event extraction.
 
 The authoritative repository documentation is in the [root README](../README.md). It covers architecture, safety limits, storage boundaries, model setup, and the relationship between Diabot and the independent GlycoGuide web app.
+
+## Look and feel
+
+The app applies a single dark, violet-accented theme app-wide (`lib/app_theme.dart`), including login, onboarding, chat, and the profile view. The assistant's chat avatar uses the same mark as the logo:
+
+<p align="center">
+  <img src="assets/images/diabot_icon_small.png" alt="Diabot chat avatar" width="56" />
+</p>
+
+The Android launcher icon is generated from the same source artwork (`assets/images/master.png`) at every standard density, from `mipmap-mdpi` through `mipmap-xxxhdpi`.
 
 ## Run
 

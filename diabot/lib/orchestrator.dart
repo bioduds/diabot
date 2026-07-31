@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'events.dart';
 import 'initialization.dart';
 import 'nlu.dart';
@@ -106,10 +108,13 @@ class ConversationOrchestrator {
 
   /// Entry point for a new piece of user input (typed, transcribed, or a
   /// tapped quick-reply label / numeric entry — all treated the same way).
+  /// When [audioBytes] is set (a recorded voice message), it is handed to
+  /// [interpreter] directly instead of [rawText] — see `nlu.dart`.
   Future<OrchestratorReply> respond(
     String rawText,
-    SemanticInterpreter? interpreter,
-  ) async {
+    SemanticInterpreter? interpreter, {
+    Uint8List? audioBytes,
+  }) async {
     if (_state == DiabotGlobalState.onboarding) {
       return _onboardingReply(await _initializationModule.respond(rawText));
     }
@@ -160,7 +165,7 @@ class ConversationOrchestrator {
     }
 
     _state = DiabotGlobalState.parsing;
-    await _parseAndPushEvents(rawText, interpreter);
+    await _parseAndPushEvents(rawText, interpreter, audioBytes: audioBytes);
     if (_awaitingEducationQuestion) {
       return const OrchestratorReply('Qual é sua dúvida?');
     }
@@ -191,8 +196,9 @@ class ConversationOrchestrator {
 
   Future<void> _parseAndPushEvents(
     String rawText,
-    SemanticInterpreter? interpreter,
-  ) async {
+    SemanticInterpreter? interpreter, {
+    Uint8List? audioBytes,
+  }) async {
     final bareNumber = _extractBareNumber(rawText);
     if (bareNumber != null) {
       _eventStack.add(EventInstance(
@@ -208,7 +214,7 @@ class ConversationOrchestrator {
       return;
     }
 
-    final extraction = await interpreter.interpret(rawText);
+    final extraction = await interpreter.interpret(rawText, audioBytes: audioBytes);
     if (extraction.events.isEmpty ||
         extraction.confidence < SemanticInterpreter.minimumConfidence) {
       _eventStack.add(EventInstance(

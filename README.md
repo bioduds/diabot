@@ -65,7 +65,11 @@ GlycoGuide stores local data in `data/cgm_assistant.db`.
 
 ## Diabot Flutter application
 
-Diabot is not a Flutter client for GlycoGuide. It is a separate Android-first prototype with its own authentication, local storage, and FSM kernel.
+<p align="center">
+  <img src="diabot/assets/images/diabot_logo_dark.png" alt="Diabot logo" width="220" />
+</p>
+
+Diabot is not a Flutter client for GlycoGuide. It is a separate Android-first prototype with its own authentication, local storage, and FSM kernel. It applies a single dark, violet-accented theme app-wide, and the same mark is reused as the Android launcher icon and as the small assistant avatar shown next to chat messages.
 
 ### Current capabilities
 

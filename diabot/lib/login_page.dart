@@ -56,9 +56,9 @@ class _LoginPageState extends State<LoginPage> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Text(
-                  'Diabot',
-                  style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
+                Image.asset(
+                  'assets/images/diabot_logo_dark.png',
+                  width: 220,
                 ),
                 const SizedBox(height: 48),
                 if (_isLoading)
