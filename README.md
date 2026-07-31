@@ -1,13 +1,13 @@
 <p align="center">
-  <img src="diabot/assets/images/diabot_logo_dark.png" alt="Diabot logo" width="220" />
+  <img src="diabot/assets/images/DiabAI.png" alt="DiabAI logo" width="220" />
 </p>
 
-# Diabot and GlycoGuide
+# DiabAI and GlycoGuide
 
 This repository contains two independent diabetes-support prototypes. They do not share an API, database, or runtime:
 
 - **GlycoGuide** (`app/`) is a local FastAPI web application that stores CGM and self-reported data, optionally syncs LibreLinkUp, and uses Ollama for educational pattern discussion.
-- **Diabot** (`diabot/`) is an Android-focused Flutter application with a deterministic finite-state-machine (FSM) kernel. It logs events locally, accepts structured extraction from an optional on-device model, provides retrieval-only education answers, and supports on-device speech-to-text.
+- **DiabAI** (`diabot/`) is an Android-focused Flutter application with a deterministic finite-state-machine (FSM) kernel. It logs events locally, accepts structured extraction from an optional on-device model, provides retrieval-only education answers, and supports on-device speech-to-text.
 
 Neither application is a medical device. They do not diagnose conditions, calculate insulin doses, prescribe treatment, or replace an emergency plan or a qualified care team.
 
@@ -18,9 +18,9 @@ Use this software only as an educational and logging aid. Follow your own clinic
 Data handling differs by application:
 
 - **GlycoGuide** keeps its SQLite database locally by default. It sends requests to the configured Ollama endpoint and, when enabled, sends LibreLinkUp credentials to Abbott to authenticate and retrieve shared data. The default Ollama endpoint is loopback, but a non-local `OLLAMA_BASE_URL` changes that boundary.
-- **Diabot** stores event logs and FSM audit records in local SQLite and keeps the onboarding profile in local preferences. Firebase/Google authentication is an external service. Its bundled RAG and speech models run on-device; its external Gemma 4 E4B `.litertlm` model (run via `flutter_gemma`) is loaded from device storage.
+- **DiabAI** stores event logs and FSM audit records in local SQLite and keeps the onboarding profile in local preferences. Firebase/Google authentication is an external service. Its bundled RAG and speech models run on-device; its external Gemma 4 E4B `.litertlm` model (run via `flutter_gemma`) is loaded from device storage.
 
-Health records and profiles are not encrypted at rest by Diabot. GlycoGuide encrypts the saved LibreLinkUp password, but its local database still contains health data. Treat development devices accordingly.
+Health records and profiles are not encrypted at rest by DiabAI. GlycoGuide encrypts the saved LibreLinkUp password, but its local database still contains health data. Treat development devices accordingly.
 
 ## GlycoGuide web application
 
@@ -67,9 +67,9 @@ CSV import is the alternative: export glucose history from LibreView, then impor
 
 GlycoGuide stores local data in `data/cgm_assistant.db`.
 
-## Diabot Flutter application
+## DiabAI Flutter application
 
-Diabot is not a Flutter client for GlycoGuide. It is a separate Android-first prototype with its own authentication, local storage, and FSM kernel. It applies a single dark, violet-accented theme app-wide, and the same mark is reused as the Android launcher icon and as the small assistant avatar shown next to chat messages.
+DiabAI is not a Flutter client for GlycoGuide. It is a separate Android-first prototype with its own authentication, local storage, and FSM kernel. It applies a single dark, violet-accented theme app-wide, and the same mark is reused as the Android launcher icon and as the small assistant avatar shown next to chat messages.
 
 ### Current capabilities
 
@@ -87,7 +87,7 @@ Diabot is not a Flutter client for GlycoGuide. It is a separate Android-first pr
 - The external Gemma model only extracts structured events. It does not generate the user-facing conversation. Without it, deterministic quick replies and bare numeric glucose entries still work; unconstrained free text is clarified instead.
 - Free-text input first passes through a generic on-device semantic interpreter, which returns structured event candidates and fields for the deterministic Kernel. When an interpretation is ambiguous or below the confidence threshold, `Outras opções` opens the generic event menu without discarding a pending event, so the user can change topic or register another event.
 - When a meal is identified, the deterministic Meal module first distinguishes food already consumed from a planned meal. Recorded meals collect stated carbohydrate grams and optional food details; planned meals collect intended foods and an optional user-provided carbohydrate estimate. It records context only and never calculates or recommends an insulin dose.
-- Diabot preserves its local profile, SQLite data, and authentication session across build updates. Debug builds expose a confirmed in-app action to erase local test data when a clean onboarding run is needed.
+- DiabAI preserves its local profile, SQLite data, and authentication session across build updates. Debug builds expose a confirmed in-app action to erase local test data when a clean onboarding run is needed.
 
 ### Requirements
 
@@ -97,7 +97,7 @@ Diabot is not a Flutter client for GlycoGuide. It is a separate Android-first pr
 - Bundled assets for RAG and STT. They are intentionally not all committed to Git because model files are large.
 - Optional free-text event extraction: a compatible Gemma 4 E4B `.litertlm` model copied to the device, normally `/sdcard/Download/gemma-4-E4B-it.litertlm`.
 
-Diabot does **not** require Ollama.
+DiabAI does **not** require Ollama.
 
 ### Run and test
 
@@ -109,7 +109,7 @@ flutter test test/fsm_mermaid_contract_test.dart
 flutter run
 ```
 
-For the external model, copy the `.litertlm` file to the configured device path and grant Diabot Android's **All files access** permission. After login, Diabot loads the external model automatically before starting the chat or first-login onboarding; if either prerequisite is unavailable, it waits and offers a retry. RAG and speech models load only after the model is ready, sequentially.
+For the external model, copy the `.litertlm` file to the configured device path and grant DiabAI Android's **All files access** permission. After login, DiabAI loads the external model automatically before starting the chat or first-login onboarding; if either prerequisite is unavailable, it waits and offers a retry. RAG and speech models load only after the model is ready, sequentially.
 
 ### FSM kernel
 
@@ -127,13 +127,13 @@ On first login without a saved profile, the FSM enters `onboarding` only after t
 
 The persisted Mermaid specifications live in [diabot/docs/fsm](diabot/docs/fsm). Each map contains a machine-readable contract checked against the Dart FSM declarations by `flutter test test/fsm_mermaid_contract_test.dart`. This verifies the declared states, event types, priority, lifecycle edges, and emergency contract, rather than attempting to infer arbitrary diagram layout.
 
-The Time Engine is a separate Diabot module that derives context from the current event stack and timestamped local history across 15-minute, 1-hour, 4-hour, 12-hour, and 24-hour windows. It supplies temporal facts to the Emergency Engine; temporal Priority and Knowledge rules must first be specified in Mermaid before implementation.
+The Time Engine is a separate DiabAI module that derives context from the current event stack and timestamped local history across 15-minute, 1-hour, 4-hour, 12-hour, and 24-hour windows. It supplies temporal facts to the Emergency Engine; temporal Priority and Knowledge rules must first be specified in Mermaid before implementation.
 
 The Profile Engine is a separate passive context module. It incrementally records explicitly stated profile facts from normal conversation, plus available authenticated identity data such as name, email, and profile-photo URL, as a local SQLite snapshot with fact-level confidence and a completeness score. It never creates a global state, runs a questionnaire, asks profile questions, makes medical reasoning, or produces recommendations. Missing profile information is only exposed to the Knowledge Engine as context.
 
 ### Profile View
 
-The Diabot Profile View is a known-only projection of that local context. It places identity and the weighted completeness indicator at the top, shows name, e-mail, and general measurements in `Dados Gerais`, then presents available health facts in ascending `Prioridade` sections. Unknown fields are never rendered, and moving a fact into `Dados Gerais` does not alter its clinical completeness weight.
+The DiabAI Profile View is a known-only projection of that local context. It places identity and the weighted completeness indicator at the top, shows name, e-mail, and general measurements in `Dados Gerais`, then presents available health facts in ascending `Prioridade` sections. Unknown fields are never rendered, and moving a fact into `Dados Gerais` does not alter its clinical completeness weight.
 
 An authenticated photo is shown when available. The user may alternatively select a local avatar from the camera or gallery; the selected file remains on the device and is only stored as a local profile reference. This is the only interaction in the view: it does not collect health facts or turn the screen into a profile questionnaire.
 
@@ -147,7 +147,7 @@ The current kernel is designed to grow by modular event behavior without a new a
 
 Do not create event-specific global states such as meal or glucose states. Classify a feature as a new `EventType`, `FieldSpec`, `EmergencyEngine` rule, `PriorityEngine` rule, or `KnowledgeEngine`-only change. Change global states, the lifecycle diagram, or the emergency diagram only when that classification requires it. The full agent workflow is in [AGENTS.md](AGENTS.md).
 
-For an implementation handoff, run `cd diabot && docs/create_fsm_handoff_zip.sh`. It produces [diabot/docs/zip/diabot-fsm-handoff.zip](diabot/docs/zip/diabot-fsm-handoff.zip) with the diagrams, implementation references, and tests required to understand and verify the FSM.
+For an implementation handoff, run `cd diabot && docs/create_fsm_handoff_zip.sh`. It produces [diabot/docs/zip/diabai-fsm-handoff.zip](diabot/docs/zip/diabai-fsm-handoff.zip) with the diagrams, implementation references, and tests required to understand and verify the FSM.
 
 ## Repository layout
 
@@ -175,7 +175,7 @@ diabot/              Independent Flutter Android-first application
 
 ## Development status
 
-This is active prototype software. The Diabot kernel has focused automated tests for deterministic input, lifecycle transitions, storage/audit behavior, optional context, emergency pre-emption/resume, and education routing. Neither application has a complete clinical validation, security audit, or production deployment profile.
+This is active prototype software. The DiabAI kernel has focused automated tests for deterministic input, lifecycle transitions, storage/audit behavior, optional context, emergency pre-emption/resume, and education routing. Neither application has a complete clinical validation, security audit, or production deployment profile.
 
 ## License
 

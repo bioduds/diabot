@@ -376,9 +376,9 @@ class _ProfileAvatar extends StatelessWidget {
   }
 
   Widget _placeholder(BuildContext context) => const ColoredBox(
-        color: DiabotPalette.surface,
+        color: DiabAIPalette.surface,
         child: Center(
             child: Icon(Icons.add_a_photo_outlined,
-                size: 36, color: DiabotPalette.iconMuted)),
+                size: 36, color: DiabAIPalette.iconMuted)),
       );
 }

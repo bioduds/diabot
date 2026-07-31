@@ -2,7 +2,7 @@
 
 ## Repository Boundaries
 
-- This repository has two independent applications: GlycoGuide (`app/`, FastAPI/Python) and Diabot (`diabot/`, Flutter). They do not share an API, runtime, database, or model pipeline. Do not wire one into the other without an explicit request.
+- This repository has two independent applications: GlycoGuide (`app/`, FastAPI/Python) and DiabAI (`diabot/`, Flutter). They do not share an API, runtime, database, or model pipeline. Do not wire one into the other without an explicit request.
 - Read the [root README](README.md) before changing behavior that affects data handling, model use, or medical-safety messaging.
 - Neither application is medical decision support. Do not add insulin-dose calculations, treatment prescriptions, diagnostic claims, or emergency-dispatch behavior.
 
@@ -11,7 +11,7 @@
 - Keep health data local by default. `OLLAMA_BASE_URL` may be non-local, so do not silently broaden data egress or log credentials/health data.
 - Run locally with the commands in [README.md](README.md). Its SQLite runtime data is under `data/` and must not be committed.
 
-## Diabot
+## DiabAI
 
 - The deterministic FSM is the authority; the on-device LLM only extracts structured events. Keep state transitions in [diabot/lib/orchestrator.dart](diabot/lib/orchestrator.dart) generic over global state and missing fields. Put event schemas, priority, validation, and emergency rules in [diabot/lib/events.dart](diabot/lib/events.dart).
 - When changing the FSM contract, update the affected Mermaid specification in [diabot/docs/fsm](diabot/docs/fsm), the contract test, and behavior tests together. Run:
@@ -21,16 +21,16 @@
   flutter test test/orchestrator_test.dart test/fsm_mermaid_contract_test.dart
   ```
 
-- Build number changes (`version`'s `+N` in `diabot/pubspec.yaml`) intentionally clear Diabot local preferences, auth state, and SQLite data at launch. Bump it before creating a new device-test APK; do not bump it for source-only checks.
+- Build number changes (`version`'s `+N` in `diabot/pubspec.yaml`) intentionally clear DiabAI local preferences, auth state, and SQLite data at launch. Bump it before creating a new device-test APK; do not bump it for source-only checks.
 - The external GGUF is manually loaded from Android storage. Keep loading manual and avoid concurrent native model loading because RAG, STT, and the large GGUF can exceed device memory.
 - Do not commit model weights or generated Flutter build outputs. When changing the RAG knowledge base, regenerate embeddings with [diabot/tools/precompute_embeddings.py](diabot/tools/precompute_embeddings.py) using its documented llama.cpp-compatible toolchain.
 
-## Diabot FSM Evolution
+## DiabAI FSM Evolution
 
-The Diabot kernel is mature enough to grow by modules without another large architectural redesign. Preserve the separation between the global FSM (`DiabotGlobalState`), event lifecycle (`EventStatus`), `EmergencyEngine`, `PriorityEngine`, and `KnowledgeEngine`.
+The DiabAI kernel is mature enough to grow by modules without another large architectural redesign. Preserve the separation between the global FSM (`DiabAIGlobalState`), event lifecycle (`EventStatus`), `EmergencyEngine`, `PriorityEngine`, and `KnowledgeEngine`.
 
 - Start every FSM behavior change with complete Mermaid (`.mmd`) diagrams. Do not implement a rule in Dart before its Mermaid specification and contract are defined.
-- Never create an event-specific global state such as `mealState` or `glucoseState`. Model the behavior with `EventType`, `FieldSpec`, generic `DiabotGlobalState`, and `EventStatus`.
+- Never create an event-specific global state such as `mealState` or `glucoseState`. Model the behavior with `EventType`, `FieldSpec`, generic `DiabAIGlobalState`, and `EventStatus`.
 - A new behavior must be classified before implementation as a new `EventType`, new `FieldSpec`, `EmergencyEngine` rule, `PriorityEngine` rule, or `KnowledgeEngine`-only change. Change global states, `lifecycle.mmd`, or `emergency.mmd` only when that classification requires it.
 - For new event behavior, change in this order: Mermaid -> FSM contract -> event lifecycle -> Emergency Engine impact -> Priority Engine impact -> Knowledge Engine impact -> tests -> Dart implementation.
 - Do not make unrelated architectural suggestions or change unrelated components when extending the FSM.
@@ -38,7 +38,7 @@ The Diabot kernel is mature enough to grow by modules without another large arch
 ### Prompt: FSM Extension Only
 
 ```text
-Você é responsável apenas por ampliar a FSM do DIABOT.
+Você é responsável apenas por ampliar a FSM do DiabAI.
 
 REGRAS:
 
@@ -46,7 +46,7 @@ REGRAS:
 2. NÃO implemente Dart primeiro.
 3. NÃO crie estados específicos para refeições, glicemia, insulina etc.
 4. Utilize apenas:
-  - DiabotGlobalState
+  - DiabAIGlobalState
   - EventType
   - FieldSpec
   - EventStatus

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dev-time tool: precompute EmbeddingGemma vectors for the Diabot RAG
+"""Dev-time tool: precompute EmbeddingGemma vectors for the DiabAI RAG
 knowledge base.
 
 This is NOT shipped with the app. Run it manually whenever
@@ -26,9 +26,9 @@ import tempfile
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DIABOT_DIR = SCRIPT_DIR.parent
-KNOWLEDGE_BASE_PATH = DIABOT_DIR / "assets" / "rag" / "knowledge_base.json"
-OUTPUT_PATH = DIABOT_DIR / "assets" / "rag" / "knowledge_embeddings.json"
+DIABAI_DIR = SCRIPT_DIR.parent
+KNOWLEDGE_BASE_PATH = DIABAI_DIR / "assets" / "rag" / "knowledge_base.json"
+OUTPUT_PATH = DIABAI_DIR / "assets" / "rag" / "knowledge_embeddings.json"
 
 
 def build_document_prompt(text: str) -> str:
@@ -50,7 +50,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--model",
-        default=str(DIABOT_DIR / "assets" / "models" / "embeddinggemma-300m-Q4_0.gguf"),
+        default=str(DIABAI_DIR / "assets" / "models" / "embeddinggemma-300m-Q4_0.gguf"),
         help="Path to the EmbeddingGemma GGUF model.",
     )
     args = parser.parse_args()

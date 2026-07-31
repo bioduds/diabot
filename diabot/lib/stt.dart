@@ -6,7 +6,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 
 /// On-device speech-to-text using a quantized Whisper Tiny model via
-/// sherpa-onnx. Chosen for the DIABOT MVP because most expected voice
+/// sherpa-onnx. Chosen for the DiabAI MVP because most expected voice
 /// messages are very short, domain-specific phrases (e.g. "comi pão",
 /// "estou em 117", "tomei 6 unidades"), so a small/fast/offline model is
 /// enough and preferable to a larger general-purpose STT model.

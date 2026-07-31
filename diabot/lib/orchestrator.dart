@@ -8,7 +8,7 @@ import 'user_profile.dart';
 
 /// A single response from [ConversationOrchestrator]: fixed, human-authored
 /// text (never LLM free-text, except the one FSM-approved exception in
-/// [DiabotGlobalState.education]) plus optional quick-reply options and/or
+/// [DiabAIGlobalState.education]) plus optional quick-reply options and/or
 /// a numeric input hint.
 class OrchestratorReply {
   final String text;
@@ -28,17 +28,17 @@ class OrchestratorReply {
 
 /// Delegates a `question` event to RAG/LLM for a free-text answer — the
 /// ONLY thing the LLM is ever allowed to say directly to the user, and
-/// only because the FSM itself decided to enter [DiabotGlobalState.education]
+/// only because the FSM itself decided to enter [DiabAIGlobalState.education]
 /// and explicitly asked for it.
 typedef EducationAnswer = Future<String> Function(String question);
 
-/// DIABOT's finite state machine.
+/// DiabAI's finite state machine.
 ///
 /// Governing rule: "There are no meal states, glucose states or insulin
 /// states. There are only events and missing pieces of information." This
 /// class never branches on event identity except to look up generic data
 /// ([eventDefinitions], [eventCompletionMessages]) — all control flow is
-/// generic over [DiabotGlobalState] and [FieldKind].
+/// generic over [DiabAIGlobalState] and [FieldKind].
 ///
 /// Pipeline: user input -> parser (LLM, multi-event) -> event stack ->
 /// emergency gate -> priority engine -> knowledge engine -> next question
@@ -77,7 +77,7 @@ class ConversationOrchestrator {
     'Tenho uma dúvida',
   ];
 
-  DiabotGlobalState _state = DiabotGlobalState.idle;
+  DiabAIGlobalState _state = DiabAIGlobalState.idle;
   final List<EventInstance> _eventStack = [];
   String? _pendingFieldKey;
   int _contextFieldIndex = 0;
@@ -87,7 +87,7 @@ class ConversationOrchestrator {
   final Map<String, dynamic> _emergencyData = {};
   ProfileContext? _profileContext;
 
-  DiabotGlobalState get state => _state;
+  DiabAIGlobalState get state => _state;
 
   /// Starts the first-login profile collection after the local model is
   /// ready. The caller is responsible for only invoking it when no saved
@@ -97,7 +97,7 @@ class ConversationOrchestrator {
     required String deviceLanguage,
     String? accountDisplayName,
   }) async {
-    _state = DiabotGlobalState.onboarding;
+    _state = DiabAIGlobalState.onboarding;
     final reply = await _initializationModule.begin(
       profile: profile,
       deviceLanguage: deviceLanguage,
@@ -115,11 +115,11 @@ class ConversationOrchestrator {
     SemanticInterpreter? interpreter, {
     Uint8List? audioBytes,
   }) async {
-    if (_state == DiabotGlobalState.onboarding) {
+    if (_state == DiabAIGlobalState.onboarding) {
       return _onboardingReply(await _initializationModule.respond(rawText));
     }
 
-    if (_state == DiabotGlobalState.emergency) {
+    if (_state == DiabAIGlobalState.emergency) {
       if (_tryFillEmergencyField(rawText)) return _resolveStack();
       return OrchestratorReply(
         _currentEmergencyQuestion()?.question ?? 'Você está bem agora?',
@@ -128,14 +128,14 @@ class ConversationOrchestrator {
     }
 
     if (rawText.trim().toLowerCase() == _otherOptions.toLowerCase()) {
-      _state = DiabotGlobalState.clarification;
+      _state = DiabAIGlobalState.clarification;
       return const OrchestratorReply(
         'Escolha o que você quer registrar ou conversar:',
         quickReplies: _otherOptionQuickReplies,
       );
     }
 
-    if (_state == DiabotGlobalState.education &&
+    if (_state == DiabAIGlobalState.education &&
         _awaitingEducationQuestion) {
       _awaitingEducationQuestion = false;
       _eventStack.add(EventInstance(
@@ -146,7 +146,7 @@ class ConversationOrchestrator {
       return _resolveStack();
     }
 
-    if (_state == DiabotGlobalState.enrichingContext &&
+    if (_state == DiabAIGlobalState.enrichingContext &&
         _eventStack.isNotEmpty) {
       final reply = await _tryFillContext(rawText);
       if (reply != null) return reply;
@@ -164,7 +164,7 @@ class ConversationOrchestrator {
       // input below.
     }
 
-    _state = DiabotGlobalState.parsing;
+    _state = DiabAIGlobalState.parsing;
     await _parseAndPushEvents(rawText, interpreter, audioBytes: audioBytes);
     if (_awaitingEducationQuestion) {
       return const OrchestratorReply('Qual é sua dúvida?');
@@ -183,7 +183,7 @@ class ConversationOrchestrator {
 
   OrchestratorReply _onboardingReply(InitializationReply reply) {
     if (_initializationModule.isComplete) {
-      _state = DiabotGlobalState.idle;
+      _state = DiabAIGlobalState.idle;
     }
     return OrchestratorReply(
       reply.text,
@@ -292,7 +292,7 @@ class ConversationOrchestrator {
   /// never re-checked mid-cascade to avoid re-triggering on the same
   /// still-unresolved signal) -> stack processing.
   Future<OrchestratorReply> _resolveStack() async {
-    if (_state == DiabotGlobalState.emergency) {
+    if (_state == DiabAIGlobalState.emergency) {
       return _resolveEmergency();
     }
 
@@ -303,7 +303,7 @@ class ConversationOrchestrator {
     );
     if (assessment.isEmergency) {
       await _markStackEscalated(assessment.reason);
-      _state = DiabotGlobalState.emergency;
+      _state = DiabAIGlobalState.emergency;
       _emergencyReason = assessment.reason;
       _emergencyData.clear();
       final reply = await _resolveEmergency();
@@ -328,7 +328,7 @@ class ConversationOrchestrator {
       return _idleReply();
     }
 
-    _state = DiabotGlobalState.prioritizing;
+    _state = DiabAIGlobalState.prioritizing;
     final sorted = PriorityEngine.sort(_eventStack);
     _eventStack
       ..clear()
@@ -338,10 +338,10 @@ class ConversationOrchestrator {
     if (active.type == EventType.question) {
       await _transition(active, EventStatus.validating);
       _eventStack.removeAt(0);
-      _state = DiabotGlobalState.education;
+      _state = DiabAIGlobalState.education;
       final question = active.data['raw_text'] as String? ?? '';
       final answer = await _resolveEducation(question);
-      _state = DiabotGlobalState.idle;
+      _state = DiabAIGlobalState.idle;
       return _continueAfter(answer);
     }
 
@@ -352,7 +352,7 @@ class ConversationOrchestrator {
         reason: 'parser could not produce a valid event',
       );
       _eventStack.removeAt(0);
-      _state = DiabotGlobalState.idle;
+      _state = DiabAIGlobalState.idle;
       final freeResponse = active.data['_freeResponse'] as String?;
       return OrchestratorReply(
         freeResponse?.trim().isNotEmpty == true
@@ -365,7 +365,7 @@ class ConversationOrchestrator {
     if (missing.isEmpty) {
         if (active.type != EventType.profile &&
           active.data['_contextHandled'] != true) {
-        _state = DiabotGlobalState.enrichingContext;
+        _state = DiabAIGlobalState.enrichingContext;
         _pendingFieldKey = '_contextOptIn';
           return OrchestratorReply(
           'Quer registrar também quando, onde e o que estava acontecendo?',
@@ -376,7 +376,7 @@ class ConversationOrchestrator {
             guidedModuleId: 'event-context',
         );
       }
-      _state = DiabotGlobalState.validating;
+      _state = DiabAIGlobalState.validating;
       await _transition(active, EventStatus.validating);
       final validation = ValidationEngine.validate(active);
       if (!validation.isValid) {
@@ -386,13 +386,13 @@ class ConversationOrchestrator {
           reason: validation.reason,
         );
         _eventStack.removeAt(0);
-        _state = DiabotGlobalState.clarification;
+        _state = DiabAIGlobalState.clarification;
         return const OrchestratorReply(
           'Não consegui registrar esse dado porque ele não é válido. '
           'Pode informar novamente?',
         );
       }
-      _state = DiabotGlobalState.storing;
+      _state = DiabAIGlobalState.storing;
       await _store(active);
       _eventStack.removeAt(0);
       final message = eventCompletionMessages[active.type]?.call(active.data) ??
@@ -405,7 +405,7 @@ class ConversationOrchestrator {
 
     final field = missing.first;
     _pendingFieldKey = field.key;
-    _state = DiabotGlobalState.waitingInformation;
+    _state = DiabAIGlobalState.waitingInformation;
     await _transition(
       active,
       EventStatus.waitingInformation,
@@ -435,7 +435,7 @@ class ConversationOrchestrator {
   }
 
   OrchestratorReply _idleReply({String? message, EventType? completed}) {
-    _state = DiabotGlobalState.idle;
+    _state = DiabAIGlobalState.idle;
     final intro = message == null
         ? 'O que você quer fazer agora?'
         : '$message\n\nEstá tudo bem por enquanto. O que você quer fazer agora?';
@@ -510,10 +510,10 @@ class ConversationOrchestrator {
     });
     final guidance = _emergencyGuidanceMessage();
     _emergencyData.clear();
-    _state = DiabotGlobalState.resuming;
+    _state = DiabAIGlobalState.resuming;
 
     if (_eventStack.isEmpty && _pendingFieldKey == null) {
-      _state = DiabotGlobalState.idle;
+      _state = DiabAIGlobalState.idle;
       return OrchestratorReply(guidance);
     }
     // Resume exactly where the stack was — nothing was discarded.

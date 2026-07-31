@@ -8,5 +8,5 @@ flowchart TD
   CONTEXT --> STORE[Store exercise event]
   STORE --> SIGNAL[Feeds recentIntenseExercise signal to EmergencyEngine]
 
-  NOTE[Generic missing-field collection only: no new DiabotGlobalState, EventStatus, priority rule, or medical recommendation. duration is a plain FieldSpec like intensity, so it can also be pre-filled passively from the parser's duration entity before being asked.]
+  NOTE[Generic missing-field collection only: no new DiabAIGlobalState, EventStatus, priority rule, or medical recommendation. duration is a plain FieldSpec like intensity, so it can also be pre-filled passively from the parser's duration entity before being asked.]
   BACKLOG[Roadmap backlog, not implemented: energy-expenditure estimate, dedicated history view. Predicted glycemic impact is medical reasoning and stays out of scope per AGENTS.md.]

@@ -1,7 +1,7 @@
 import 'dart:convert';
 
-import 'package:diabot/events.dart';
-import 'package:diabot/time_engine.dart';
+import 'package:diabai/events.dart';
+import 'package:diabai/time_engine.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class _MemoryHistory implements RecentEventReader {

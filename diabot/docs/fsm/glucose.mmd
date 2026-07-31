@@ -11,5 +11,5 @@ flowchart TD
   CONTEXT --> STORE[Store glucose event]
   STORE --> SIGNAL[Feeds glucose + recentInsulin signals to EmergencyEngine]
 
-  NOTE[Generic missing-field collection only: no new DiabotGlobalState, EventStatus, priority rule, or medical recommendation]
+  NOTE[Generic missing-field collection only: no new DiabAIGlobalState, EventStatus, priority rule, or medical recommendation]
   BACKLOG[Roadmap backlog, not implemented: history/trend charts, statistics, Time in Range, GMI, glycemic variability. These are read-only analytics over stored events, not new event fields — they belong in a future reporting view like profile_view.mmd, not this contract. Manual CGM integration already exists as the separate stub `cgm` EventType.]

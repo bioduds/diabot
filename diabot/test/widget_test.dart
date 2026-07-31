@@ -8,13 +8,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:diabot/main.dart';
+import 'package:diabai/main.dart';
 
 void main() {
-  testWidgets('Diabot has a send button and prompt field', (WidgetTester tester) async {
+  testWidgets('DiabAI has a send button and prompt field', (WidgetTester tester) async {
     await tester.pumpWidget(const MaterialApp(home: ChatPage()));
 
-    expect(find.text('Enviar'), findsOneWidget);
+    expect(find.byIcon(Icons.send), findsOneWidget);
     expect(find.byType(TextField), findsOneWidget);
   });
 }

@@ -1,4 +1,4 @@
-package com.example.diabot
+package com.example.diabai
 
 import io.flutter.embedding.android.FlutterActivity
 

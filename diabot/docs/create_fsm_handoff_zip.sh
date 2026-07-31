@@ -3,9 +3,9 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-diabot_dir="$(cd "$script_dir/.." && pwd)"
+diabai_dir="$(cd "$script_dir/.." && pwd)"
 output_dir="$script_dir/zip"
-archive="$output_dir/diabot-fsm-handoff.zip"
+archive="$output_dir/diabai-fsm-handoff.zip"
 
 files=(
   README.md
@@ -25,8 +25,8 @@ files=(
 
 fsm_files=()
 while IFS= read -r file; do
-  fsm_files+=("${file#"$diabot_dir"/}")
-done < <(find "$diabot_dir/docs/fsm" -type f -print | sort)
+  fsm_files+=("${file#"$diabai_dir"/}")
+done < <(find "$diabai_dir/docs/fsm" -type f -print | sort)
 
 if [[ ${#fsm_files[@]} -eq 0 ]]; then
   echo "No FSM modules found in docs/fsm." >&2
@@ -41,7 +41,7 @@ command -v zip >/dev/null || {
 }
 
 for file in "${files[@]}"; do
-  if [[ ! -f "$diabot_dir/$file" ]]; then
+  if [[ ! -f "$diabai_dir/$file" ]]; then
     echo "Required FSM handoff file is missing: $file" >&2
     exit 1
   fi
@@ -51,7 +51,7 @@ mkdir -p "$output_dir"
 rm -f "$archive"
 
 (
-  cd "$diabot_dir"
+  cd "$diabai_dir"
   zip -q "$archive" "${files[@]}"
 )
 

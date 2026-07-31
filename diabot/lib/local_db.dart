@@ -6,7 +6,7 @@ import 'package:sqflite/sqflite.dart';
 
 import 'events.dart';
 
-/// Local-only SQLite event log: every piece of health data DIABOT collects
+/// Local-only SQLite event log: every piece of health data DiabAI collects
 /// (meals, exercise, glucose readings, insulin doses, symptom reports) is
 /// persisted here as a typed, timestamped event, independent of the chat
 /// UI. This is the foundation of the "complete local data control" system
@@ -25,7 +25,7 @@ class LocalDatabase
     final existing = _db;
     if (existing != null) return existing;
     final dir = await getApplicationDocumentsDirectory();
-    final path = p.join(dir.path, 'diabot.db');
+    final path = p.join(dir.path, 'diabai.db');
     final db = await openDatabase(
       path,
       version: 3,

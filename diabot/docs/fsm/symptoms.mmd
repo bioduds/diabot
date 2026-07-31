@@ -12,5 +12,5 @@ flowchart TD
   CONTEXT --> STORE[Store symptom event]
   STORE --> SIGNAL[Feeds symptomType + glucose signals to EmergencyEngine]
 
-  NOTE[Symptoms are the highest-priority event type, but priority ordering alone does not add a new DiabotGlobalState, EventStatus, or medical recommendation]
+  NOTE[Symptoms are the highest-priority event type, but priority ordering alone does not add a new DiabAIGlobalState, EventStatus, or medical recommendation]
   BACKLOG[Roadmap backlog, not implemented: correlation-with-glucose analytics (read-only reporting, not a new FSM field). General/non-hypo-hyper symptoms already have their own separate `illness` EventType with free-text detail.]

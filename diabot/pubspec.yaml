@@ -1,4 +1,4 @@
-name: diabot
+name: diabai
 description: A simple diabetes education chat client for Ollama.
 publish_to: none
 # Bump the build number before producing a device-test APK. Local profile
@@ -39,8 +39,8 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/images/diabot_logo_dark.png
-    - assets/images/diabot_icon_small.png
+    - assets/images/DiabAI.png
+    - assets/images/diabai_icon_small.png
     - assets/i18n/pt-BR.json
     - assets/rag/knowledge_base.json
     - assets/rag/knowledge_embeddings.json

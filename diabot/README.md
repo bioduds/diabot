@@ -1,19 +1,19 @@
-# Diabot
+# DiabAI
 
 <p align="center">
-  <img src="assets/images/diabot_logo_dark.png" alt="Diabot logo" width="260" />
+  <img src="assets/images/DiabAI.png" alt="DiabAI logo" width="260" />
 </p>
 
-Diabot is an Android-first Flutter prototype for structured diabetes event logging. Its finite-state-machine (FSM) kernel controls conversation flow; an optional on-device Gemma 4 E4B model (`.litertlm`, run via `flutter_gemma`) is limited to semantic event extraction.
+DiabAI is an Android-first Flutter prototype for structured diabetes event logging. Its finite-state-machine (FSM) kernel controls conversation flow; an optional on-device Gemma 4 E4B model (`.litertlm`, run via `flutter_gemma`) is limited to semantic event extraction.
 
-The authoritative repository documentation is in the [root README](../README.md). It covers architecture, safety limits, storage boundaries, model setup, and the relationship between Diabot and the independent GlycoGuide web app.
+The authoritative repository documentation is in the [root README](../README.md). It covers architecture, safety limits, storage boundaries, model setup, and the relationship between DiabAI and the independent GlycoGuide web app.
 
 ## Look and feel
 
 The app applies a single dark, violet-accented theme app-wide (`lib/app_theme.dart`), including login, onboarding, chat, and the profile view. The assistant's chat avatar uses the same mark as the logo:
 
 <p align="center">
-  <img src="assets/images/diabot_icon_small.png" alt="Diabot chat avatar" width="56" />
+  <img src="assets/images/diabai_icon_small.png" alt="DiabAI chat avatar" width="56" />
 </p>
 
 The Android launcher icon is generated from the same source artwork (`assets/images/master.png`) at every standard density, from `mipmap-mdpi` through `mipmap-xxxhdpi`.
@@ -27,7 +27,7 @@ flutter test test/fsm_mermaid_contract_test.dart
 flutter run
 ```
 
-Diabot does not use Ollama. To enable free-text semantic extraction, manually copy a compatible Gemma 4 E4B `.litertlm` model to Android device storage (default: `/sdcard/Download/gemma-4-E4B-it.litertlm`) and grant **All files access**. After login, Diabot loads the model automatically before starting the chat or first-login onboarding, with a retry screen when either prerequisite is unavailable.
+DiabAI does not use Ollama. To enable free-text semantic extraction, manually copy a compatible Gemma 4 E4B `.litertlm` model to Android device storage (default: `/sdcard/Download/gemma-4-E4B-it.litertlm`) and grant **All files access**. After login, DiabAI loads the model automatically before starting the chat or first-login onboarding, with a retry screen when either prerequisite is unavailable.
 
 The model runs through `flutter_gemma`/`flutter_gemma_litertlm` (see [lib/llm_runtime.dart](lib/llm_runtime.dart)); RAG embeddings still run on a separate on-device `llama_cpp_dart` runtime and are unaffected by this. `flutter_gemma` has no grammar/JSON-schema constrained decoding, so structured extraction relies on few-shot prompting plus a defensive parser that discards malformed output rather than a hard grammar.
 
@@ -75,4 +75,4 @@ To give another programmer the complete FSM specification and its executable ref
 docs/create_fsm_handoff_zip.sh
 ```
 
-It writes [docs/zip/diabot-fsm-handoff.zip](docs/zip/diabot-fsm-handoff.zip), containing this README, all Mermaid maps, the Dart FSM contract, orchestrator, Profile Engine, Profile View, Time Engine, and their focused test suites. The script verifies that every required file exists before replacing the archive.
+It writes [docs/zip/diabai-fsm-handoff.zip](docs/zip/diabai-fsm-handoff.zip), containing this README, all Mermaid maps, the Dart FSM contract, orchestrator, Profile Engine, Profile View, Time Engine, and their focused test suites. The script verifies that every required file exists before replacing the archive.

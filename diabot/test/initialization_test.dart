@@ -1,5 +1,5 @@
-import 'package:diabot/initialization.dart';
-import 'package:diabot/user_profile.dart';
+import 'package:diabai/initialization.dart';
+import 'package:diabai/user_profile.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 

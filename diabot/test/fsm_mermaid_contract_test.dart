@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:diabot/events.dart';
+import 'package:diabai/events.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 Map<String, dynamic> readMermaidContract(String path) {
@@ -36,7 +36,7 @@ void main() {
     expect(strings(contract, 'priority'), priority);
     expect(activeStates.toSet().intersection(stubStates.toSet()), isEmpty);
     expect({...activeStates, ...stubStates}.length,
-        DiabotGlobalState.values.length);
+        DiabAIGlobalState.values.length);
     expect(priority.toSet().length, priority.length);
     expect(priority.toSet(), eventTypes.toSet());
   });

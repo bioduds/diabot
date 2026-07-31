@@ -7,7 +7,7 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <application
-        android:label="diabot"
+        android:label="DiabAI"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:largeHeap="true">

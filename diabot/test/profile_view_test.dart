@@ -1,5 +1,5 @@
-import 'package:diabot/profile_engine.dart';
-import 'package:diabot/profile_view.dart';
+import 'package:diabai/profile_engine.dart';
+import 'package:diabai/profile_view.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 ProfileFact fact(Object value) => ProfileFact(

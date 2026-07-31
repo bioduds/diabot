@@ -3,7 +3,7 @@ import 'dart:convert';
 /// What actually happened, per the user's own architectural rule: "There
 /// are no meal states, glucose states or insulin states. There are only
 /// events and missing pieces of information." This is the full universe of
-/// things DIABOT can recognize — never a conversational state.
+/// things DiabAI can recognize — never a conversational state.
 enum EventType {
   symptoms,
   glucose,
@@ -29,7 +29,7 @@ EventType? eventTypeFromString(String value) {
 /// The FSM's global states. None of these are per-event — `waitingInformation`
 /// applies identically whether the missing piece belongs to a meal, an
 /// insulin dose, or anything else; the FSM never branches on event identity.
-enum DiabotGlobalState {
+enum DiabAIGlobalState {
   idle,
   parsing,
   prioritizing,
@@ -72,22 +72,22 @@ enum EventStatus {
 /// Canonical facts that the persisted Mermaid specification must mirror.
 class FsmContract {
   static const activeStates = [
-    DiabotGlobalState.idle,
-    DiabotGlobalState.parsing,
-    DiabotGlobalState.prioritizing,
-    DiabotGlobalState.waitingInformation,
-    DiabotGlobalState.enrichingContext,
-    DiabotGlobalState.validating,
-    DiabotGlobalState.storing,
-    DiabotGlobalState.clarification,
-    DiabotGlobalState.resuming,
-    DiabotGlobalState.emergency,
-    DiabotGlobalState.onboarding,
-    DiabotGlobalState.education,
+    DiabAIGlobalState.idle,
+    DiabAIGlobalState.parsing,
+    DiabAIGlobalState.prioritizing,
+    DiabAIGlobalState.waitingInformation,
+    DiabAIGlobalState.enrichingContext,
+    DiabAIGlobalState.validating,
+    DiabAIGlobalState.storing,
+    DiabAIGlobalState.clarification,
+    DiabAIGlobalState.resuming,
+    DiabAIGlobalState.emergency,
+    DiabAIGlobalState.onboarding,
+    DiabAIGlobalState.education,
   ];
 
   static const stubStates = [
-    DiabotGlobalState.learningUser,
+    DiabAIGlobalState.learningUser,
   ];
 
   static const initializationProfileFields = [
@@ -98,8 +98,8 @@ class FsmContract {
     'tempoDiagnostico',
     'insulinas',
   ];
-  static const initializationEntryState = DiabotGlobalState.onboarding;
-  static const initializationExitState = DiabotGlobalState.idle;
+  static const initializationEntryState = DiabAIGlobalState.onboarding;
+  static const initializationExitState = DiabAIGlobalState.idle;
   static const initializationModelGate = 'model-ready-before-onboarding';
   static const initializationModelFailure = 'wait-and-retry';
 
@@ -452,7 +452,7 @@ class KernelTransition {
   final EventType eventType;
   final EventStatus from;
   final EventStatus to;
-  final DiabotGlobalState globalState;
+  final DiabAIGlobalState globalState;
   final DateTime at;
   final String? reason;
 }

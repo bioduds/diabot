@@ -8,7 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// [SharedPreferences] and is used to personalize the on-device Gemma
 /// system prompt used by the local language-model runtime.
 class UserProfile {
-  static const _prefsKey = 'diabot_user_profile';
+  static const _prefsKey = 'diabai_user_profile';
 
   String idioma;
   String nome;

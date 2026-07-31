@@ -1,12 +1,12 @@
 import 'dart:typed_data';
 
-import 'package:diabot/events.dart';
-import 'package:diabot/initialization.dart';
-import 'package:diabot/module_catalog.dart';
-import 'package:diabot/nlu.dart';
-import 'package:diabot/orchestrator.dart';
-import 'package:diabot/time_engine.dart';
-import 'package:diabot/user_profile.dart';
+import 'package:diabai/events.dart';
+import 'package:diabai/initialization.dart';
+import 'package:diabai/module_catalog.dart';
+import 'package:diabai/nlu.dart';
+import 'package:diabai/orchestrator.dart';
+import 'package:diabai/time_engine.dart';
+import 'package:diabai/user_profile.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -192,7 +192,7 @@ void main() {
     final completed = await orchestrator.respond('Fiasp', null);
 
     expect(first.text, contains('peso atual'));
-    expect(orchestrator.state, DiabotGlobalState.idle);
+    expect(orchestrator.state, DiabAIGlobalState.idle);
     expect(completed.text, contains('Perfil inicial salvo'));
     expect(completed.quickReplies, contains('Registrar glicemia'));
   });

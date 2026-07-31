@@ -64,17 +64,17 @@ void main() async {
   await UiText.load(
     WidgetsBinding.instance.platformDispatcher.locale.toLanguageTag(),
   );
-  runApp(const DiabotApp());
+  runApp(const DiabAIApp());
 }
 
-class DiabotApp extends StatelessWidget {
-  const DiabotApp({super.key});
+class DiabAIApp extends StatelessWidget {
+  const DiabAIApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Diabot',
-      theme: diabotTheme,
+      title: 'DiabAI',
+      theme: diabAITheme,
       home: const AuthGate(),
     );
   }
@@ -211,7 +211,7 @@ class _ChatPageState extends State<ChatPage> {
   bool _isBootstrapping = true;
   String? _bootstrapError;
   final RagService _rag = RagService();
-  // "Gemma listens, DIABOT talks": Gemma is only ever asked to extract
+  // "Gemma listens, DiabAI talks": Gemma is only ever asked to extract
   // events + fields (see nlu.dart). All user-facing text comes from
   // ConversationOrchestrator's fixed template responses, except the one
   // FSM-approved exception (a `question` event resolved via RAG lookup in
@@ -452,7 +452,7 @@ class _ChatPageState extends State<ChatPage> {
         if (showError && mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
               content: Text(
-                  'É preciso conceder "Acesso a todos os arquivos" ao Diabot '
+                  'É preciso conceder "Acesso a todos os arquivos" ao DiabAI '
                   'para carregar o modelo local. Conceda a permissão e tente '
                   'novamente.')));
         }
@@ -750,7 +750,7 @@ class _ChatPageState extends State<ChatPage> {
 
     final dir = await getTemporaryDirectory();
     final path =
-        '${dir.path}/diabot_voice_${DateTime.now().millisecondsSinceEpoch}.wav';
+        '${dir.path}/diabai_voice_${DateTime.now().millisecondsSinceEpoch}.wav';
     await _audioRecorder.start(
       const RecordConfig(
         encoder: AudioEncoder.wav,
@@ -793,15 +793,15 @@ class _ChatPageState extends State<ChatPage> {
         GestureDetector(
           onTap: _toggleRecording,
           child: const Icon(Icons.stop_circle,
-              color: DiabotPalette.offline, size: 22),
+              color: DiabAIPalette.offline, size: 22),
         ),
         const SizedBox(width: 10),
         const Expanded(
           child: Text('Gravando...',
-              style: TextStyle(color: DiabotPalette.textSecondary)),
+              style: TextStyle(color: DiabAIPalette.textSecondary)),
         ),
         Text(_formatDuration(_recordingElapsed),
-            style: const TextStyle(color: DiabotPalette.textMuted)),
+            style: const TextStyle(color: DiabAIPalette.textMuted)),
       ],
     );
   }
@@ -859,7 +859,7 @@ class _ChatPageState extends State<ChatPage> {
               height: 40,
               decoration: const BoxDecoration(
                 shape: BoxShape.circle,
-                gradient: DiabotPalette.accentGradient,
+                gradient: DiabAIPalette.accentGradient,
               ),
               child: const Icon(Icons.health_and_safety_rounded,
                   color: Colors.white, size: 20),
@@ -870,11 +870,11 @@ class _ChatPageState extends State<ChatPage> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Diabot',
+                  const Text('DiabAI',
                       style: TextStyle(
                         fontWeight: FontWeight.w600,
                         fontSize: 16,
-                        color: DiabotPalette.textPrimary,
+                        color: DiabAIPalette.textPrimary,
                       )),
                   Row(
                     children: [
@@ -884,8 +884,8 @@ class _ChatPageState extends State<ChatPage> {
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           color: modelReady
-                              ? DiabotPalette.online
-                              : DiabotPalette.offline,
+                              ? DiabAIPalette.online
+                              : DiabAIPalette.offline,
                         ),
                       ),
                       const SizedBox(width: 4),
@@ -897,7 +897,7 @@ class _ChatPageState extends State<ChatPage> {
                                 : 'Modelo não carregado',
                         style: const TextStyle(
                           fontSize: 12,
-                          color: DiabotPalette.accent,
+                          color: DiabAIPalette.accent,
                         ),
                       ),
                     ],
@@ -1024,7 +1024,7 @@ class _ChatPageState extends State<ChatPage> {
                       final isFirstOfRun = index == 0 ||
                           _messages[index - 1].role != message.role;
                       final textColor =
-                          isUser ? Colors.white : DiabotPalette.textSecondary;
+                          isUser ? Colors.white : DiabAIPalette.textSecondary;
                       final audioPath = message.audioPath;
                       final isPlaying =
                           audioPath != null && _playingAudioPath == audioPath;
@@ -1076,7 +1076,7 @@ class _ChatPageState extends State<ChatPage> {
                                           shape: BoxShape.circle,
                                           image: DecorationImage(
                                             image: AssetImage(
-                                                'assets/images/diabot_icon_small.png'),
+                                                'assets/images/diabai_icon_small.png'),
                                             fit: BoxFit.cover,
                                           ),
                                         ),
@@ -1098,15 +1098,15 @@ class _ChatPageState extends State<ChatPage> {
                                         horizontal: 14, vertical: 10),
                                     decoration: BoxDecoration(
                                       gradient: isUser
-                                          ? DiabotPalette.userBubbleGradient
+                                          ? DiabAIPalette.userBubbleGradient
                                           : null,
                                       color:
-                                          isUser ? null : DiabotPalette.surface,
+                                          isUser ? null : DiabAIPalette.surface,
                                       border: isUser
                                           ? null
                                           : Border.all(
                                               color:
-                                                  DiabotPalette.surfaceBorder),
+                                                  DiabAIPalette.surfaceBorder),
                                       borderRadius: BorderRadius.only(
                                         topLeft: const Radius.circular(18),
                                         topRight: const Radius.circular(18),
@@ -1128,7 +1128,7 @@ class _ChatPageState extends State<ChatPage> {
                                           _formatMessageTime(
                                               message.timestamp),
                                           style: const TextStyle(
-                                            color: DiabotPalette.textMuted,
+                                            color: DiabAIPalette.textMuted,
                                             fontSize: 11,
                                           ),
                                         ),
@@ -1136,7 +1136,7 @@ class _ChatPageState extends State<ChatPage> {
                                           const SizedBox(width: 4),
                                           const Text('✓✓',
                                               style: TextStyle(
-                                                color: DiabotPalette.accent,
+                                                color: DiabAIPalette.accent,
                                                 fontSize: 11,
                                               )),
                                         ],
@@ -1208,9 +1208,9 @@ class _ChatPageState extends State<ChatPage> {
                 padding:
                     const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                 decoration: BoxDecoration(
-                  color: DiabotPalette.surface,
+                  color: DiabAIPalette.surface,
                   borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: DiabotPalette.surfaceBorder),
+                  border: Border.all(color: DiabAIPalette.surfaceBorder),
                 ),
                 child: _isRecording
                     ? _buildRecordingIndicator()
@@ -1223,12 +1223,12 @@ class _ChatPageState extends State<ChatPage> {
                                 hintText:
                                     'Escreva aqui ou clique no microfone para falar',
                                 hintStyle:
-                                    TextStyle(color: DiabotPalette.iconMuted),
+                                    TextStyle(color: DiabAIPalette.iconMuted),
                                 border: InputBorder.none,
                                 isCollapsed: true,
                               ),
                               style: const TextStyle(
-                                  color: DiabotPalette.textPrimary),
+                                  color: DiabAIPalette.textPrimary),
                               minLines: 1,
                               maxLines: 4,
                               textInputAction: TextInputAction.send,
@@ -1239,7 +1239,7 @@ class _ChatPageState extends State<ChatPage> {
                           IconButton(
                             onPressed: _isLoading ? null : _toggleRecording,
                             icon: const Icon(Icons.mic),
-                            color: DiabotPalette.iconMuted,
+                            color: DiabAIPalette.iconMuted,
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(),
                             tooltip: 'Gravar mensagem de voz',
@@ -1256,13 +1256,13 @@ class _ChatPageState extends State<ChatPage> {
                 height: 48,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  gradient: canSend ? DiabotPalette.accentGradient : null,
-                  color: canSend ? null : DiabotPalette.surface,
+                  gradient: canSend ? DiabAIPalette.accentGradient : null,
+                  color: canSend ? null : DiabAIPalette.surface,
                 ),
                 child: Icon(
                   Icons.send,
                   size: 18,
-                  color: canSend ? Colors.white : DiabotPalette.iconMuted,
+                  color: canSend ? Colors.white : DiabAIPalette.iconMuted,
                 ),
               ),
             ),

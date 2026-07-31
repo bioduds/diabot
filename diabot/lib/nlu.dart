@@ -38,7 +38,7 @@ class NluExtraction {
 
 /// Wraps the on-device Gemma model (via [LocalLLMRuntime]) to do ONLY
 /// multi-event extraction from a single user utterance. It never streams
-/// a conversational answer and never decides what DIABOT does next.
+/// a conversational answer and never decides what DiabAI does next.
 /// Converts free-form user language into structured event candidates.
 ///
 /// The Kernel consumes only [NluExtraction], so this interface is the
@@ -261,7 +261,7 @@ Saída: {"events": ["unknown"], "entities": {"free_reply": "Claro. Me conte o qu
   }) {
     // ignore: avoid_print
     print(
-      'DIABOT_NLU Semantic response: chars=$characterCount json=$hasJson '
+      'DiabAI_NLU Semantic response: chars=$characterCount json=$hasJson '
       'events=${eventCount ?? '-'} confidence=${confidence ?? '-'} '
       'parseFailed=$parseFailed',
     );
@@ -278,7 +278,7 @@ Saída: {"events": ["unknown"], "entities": {"free_reply": "Claro. Me conte o qu
   }) {
     // ignore: avoid_print
     print(
-      'DIABOT_NLU Semantic runtime: stage=$stage status=$runtimeStatus '
+      'DiabAI_NLU Semantic runtime: stage=$stage status=$runtimeStatus '
       'busy=$alreadyInterpreting completed=${completed ?? '-'} '
       'timedOut=${timedOut ?? '-'} failure=${failureType ?? '-'} '
       'chars=${characterCount ?? '-'}',

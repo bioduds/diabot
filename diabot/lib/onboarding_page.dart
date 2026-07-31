@@ -211,7 +211,7 @@ class _OnboardingPageState extends State<ProfileEditorPage> {
 
     final dir = await getTemporaryDirectory();
     final path =
-        '${dir.path}/diabot_onboarding_voice_${DateTime.now().millisecondsSinceEpoch}.wav';
+        '${dir.path}/diabai_onboarding_voice_${DateTime.now().millisecondsSinceEpoch}.wav';
     await _audioRecorder.start(
       const RecordConfig(
         encoder: AudioEncoder.wav,
@@ -288,7 +288,7 @@ class _OnboardingPageState extends State<ProfileEditorPage> {
     final isEditing = widget.existingProfile != null;
     return Scaffold(
       appBar: AppBar(
-        title: Text(isEditing ? 'Editar perfil' : 'Bem-vindo(a) ao Diabot'),
+        title: Text(isEditing ? 'Editar perfil' : 'Bem-vindo(a) ao DiabAI'),
         automaticallyImplyLeading: false,
       ),
       body: Column(

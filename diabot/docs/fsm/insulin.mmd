@@ -8,5 +8,5 @@ flowchart TD
   CONTEXT --> STORE[Store insulin event]
   STORE --> SIGNAL[Feeds recentInsulin signal to EmergencyEngine]
 
-  NOTE[Generic missing-field collection only: no new DiabotGlobalState, EventStatus, priority rule, dose calculation, or medical recommendation. insulinType and doseContext are plain FieldSpec entries like dose, so they can also be pre-filled passively from the parser's insulin_type entity before being asked.]
+  NOTE[Generic missing-field collection only: no new DiabAIGlobalState, EventStatus, priority rule, dose calculation, or medical recommendation. insulinType and doseContext are plain FieldSpec entries like dose, so they can also be pre-filled passively from the parser's insulin_type entity before being asked.]
   BACKLOG[Roadmap backlog, not implemented: insulin-on-board tracking, dedicated history view, dose suggestions. Any of these that add dose calculation or clinical reasoning stay out of scope per AGENTS.md.]

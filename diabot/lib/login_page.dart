@@ -57,7 +57,7 @@ class _LoginPageState extends State<LoginPage> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Image.asset(
-                  'assets/images/diabot_logo_dark.png',
+                  'assets/images/DiabAI.png',
                   width: 220,
                 ),
                 const SizedBox(height: 48),
