@@ -14,6 +14,11 @@ class InitializationReply {
 /// Collects and saves the local profile for the onboarding FSM entry point.
 /// It does not create events, evaluate health data, or choose global states.
 class InitializationModule {
+  static const _introMessage = 'Olá! Eu sou o Nuno, seu assistente de '
+      'diabetes. Vou te ajudar no acompanhamento da sua glicemia, '
+      'refeições, insulina, atividade física e situações de emergência. '
+      'Antes de começarmos, preciso confirmar alguns dados rapidinho.';
+
   UserProfile? _profile;
   int _step = 0;
 
@@ -34,7 +39,12 @@ class InitializationModule {
       profile.nome = displayName;
     }
     _skipKnownFields();
-    return _nextReply();
+    final reply = await _nextReply();
+    if (isComplete) return reply;
+    return InitializationReply(
+      text: '$_introMessage\n\n${reply.text}',
+      quickReplies: reply.quickReplies,
+    );
   }
 
   Future<InitializationReply> respond(String rawText) async {

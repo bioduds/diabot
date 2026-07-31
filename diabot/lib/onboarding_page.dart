@@ -98,8 +98,9 @@ class _OnboardingPageState extends State<ProfileEditorPage> {
 
     if (isFirstLogin && _profile.nome.isNotEmpty) {
       _bubbles.add(_OnboardingBubble(true,
-          'Olá, ${_profile.nome}! Vi seu nome pela sua conta Google. '
-          'Vamos completar mais alguns dados rapidinho.'));
+          'Olá, ${_profile.nome}! Eu sou o Nuno, seu assistente inteligente. '
+          'Vamos completar mais alguns '
+          'dados rapidinho.'));
     }
     _askCurrentQuestion();
   }

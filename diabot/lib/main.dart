@@ -870,7 +870,8 @@ class _ChatPageState extends State<ChatPage> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('DiabAI',
+                  // Nuno is the assistant persona shown to users; DiabAI is the product/app name.
+                  const Text('Nuno',
                       style: TextStyle(
                         fontWeight: FontWeight.w600,
                         fontSize: 16,

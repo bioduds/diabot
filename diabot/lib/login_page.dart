@@ -58,7 +58,7 @@ class _LoginPageState extends State<LoginPage> {
               children: [
                 Image.asset(
                   'assets/images/DiabAI.png',
-                  width: 220,
+                  width: 264,
                 ),
                 const SizedBox(height: 48),
                 if (_isLoading)
