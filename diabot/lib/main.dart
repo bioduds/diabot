@@ -5,8 +5,9 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_gemma/flutter_gemma.dart';
+import 'package:flutter_gemma_litertlm/flutter_gemma_litertlm.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:llama_cpp_dart/llama_cpp_dart.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
@@ -15,6 +16,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'events.dart';
 import 'local_db.dart';
 import 'login_page.dart';
+import 'llm_runtime.dart';
+import 'module_catalog.dart';
 import 'nlu.dart';
 import 'orchestrator.dart';
 import 'profile_engine.dart';
@@ -22,26 +25,29 @@ import 'profile_view.dart';
 import 'rag.dart';
 import 'stt.dart';
 import 'time_engine.dart';
+import 'ui_text.dart';
 import 'user_profile.dart';
+import 'semantic_diagnostics.dart';
+import 'package:talker_flutter/talker_flutter.dart';
 
 /// Default on-device model file. It must be placed manually on the device
 /// (e.g. copied via USB or downloaded through the phone's browser) at this
-/// exact path — the app never fetches it over the network. Using the base
-/// (pretrained-only, non-instruction-tuned) Gemma 3 4B checkpoint here per
-/// request. Gemma 3 4B needs ~2.5GB of RAM/storage and is noticeably
-/// slower per classification than the 1B model. If the file is missing,
-/// `_initLocalModel` fails fast with a clear SnackBar instead of hanging,
-/// so it's safe to leave this pointed at 4B even before the file is
-/// copied over.
+/// exact path — the app never fetches it over the network. Using Gemma 4
+/// E4B in `.litertlm` format (LiteRT-LM runtime, via `flutter_gemma` +
+/// `flutter_gemma_litertlm`), replacing the previous `llama_cpp_dart`/GGUF
+/// backend, whose isolate-based generation crashed with "Cannot invoke
+/// native callback from a different isolate". The file is ~3.66GB on disk;
+/// if it's missing, `_initLocalModel` fails fast with a clear SnackBar
+/// instead of hanging.
 ///
-/// NOTE: this model is intentionally NOT auto-loaded at startup anymore.
-/// Loading a 2.36GB model natively while the STT (Whisper) and RAG
-/// (embedding) models are also loading concurrently caused a native
-/// out-of-memory crash on a mid-range device (Galaxy A56) — a crash that
-/// Dart's try/catch cannot intercept because it happens inside the native
-/// llama.cpp/mmap code, not in Dart. Use the cloud-download icon in the
-/// app bar to load it manually once the app is idle.
-const _defaultModelPath = '/sdcard/Download/gemma-3-4b-Q4_0.gguf';
+/// NOTE: this model is intentionally NOT auto-loaded at startup. Loading a
+/// multi-GB model natively while the STT (Whisper) and RAG (embedding)
+/// models are also loading concurrently caused a native out-of-memory
+/// crash on a mid-range device (Galaxy A56) — a crash that Dart's
+/// try/catch cannot intercept because it happens inside the native model
+/// runtime/mmap code, not in Dart. Use the cloud-download icon in the app
+/// bar to load it manually once the app is idle.
+const _defaultModelPath = '/sdcard/Download/gemma-4-E4B-it.litertlm';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,7 +56,13 @@ void main() async {
   // behind them — Scaffolds below add bottom SafeArea padding so content
   // never sits underneath the Android nav buttons.
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  // Registers the LiteRT-LM engine once for the process; must run before
+  // any `FlutterGemma.installModel(...)`/`getActiveModel(...)` call.
+  await FlutterGemma.initialize(inferenceEngines: [const LiteRtLmEngine()]);
   await Firebase.initializeApp();
+  await UiText.load(
+    WidgetsBinding.instance.platformDispatcher.locale.toLanguageTag(),
+  );
   runApp(const DiabotApp());
 }
 
@@ -148,14 +160,36 @@ class Message {
   Message(this.role, this.text, {this.quickReplies, this.numericInputHint});
 }
 
+enum _InteractionMode { free, guided }
+
+class _GuidedPrompt {
+  const _GuidedPrompt({
+    required this.moduleId,
+    required this.kind,
+    required this.question,
+    this.options = const [],
+    this.numericInputHint,
+  });
+
+  final String moduleId;
+  final FieldKind kind;
+  final String question;
+  final List<String> options;
+  final String? numericInputHint;
+}
+
 class _ChatPageState extends State<ChatPage> {
   final TextEditingController _controller = TextEditingController();
   final List<Message> _messages = [];
   bool _isLoading = false;
-  // On-device Llama parent + streaming helpers
-  LlamaParent? _llamaParent;
-  StreamSubscription<String>? _tokenSub;
-  StreamSubscription<CompletionEvent>? _compSub;
+  _InteractionMode _interactionMode = _InteractionMode.free;
+  _GuidedPrompt? _guidedPrompt;
+  final Talker _talker = Talker();
+  late final SemanticDiagnostics _semanticDiagnostics =
+      SemanticDiagnostics(_talker);
+  // On-device language-model runtime and semantic interpreter.
+  LocalLLMRuntime? _llmRuntime;
+  IntentClassifier? _semanticInterpreter;
   bool _modelLoading = false;
   bool _isBootstrapping = true;
   String? _bootstrapError;
@@ -229,6 +263,14 @@ class _ChatPageState extends State<ChatPage> {
           onboardingReply.text,
           quickReplies: onboardingReply.quickReplies,
         ));
+        _guidedPrompt = _GuidedPrompt(
+          moduleId: onboardingReply.guidedModuleId ?? 'onboarding',
+          kind: onboardingReply.guidedFieldKind ?? FieldKind.freeText,
+          question: onboardingReply.text,
+          options: onboardingReply.quickReplies ?? const [],
+          numericInputHint: onboardingReply.numericInputHint,
+        );
+        _interactionMode = _InteractionMode.guided;
       }
     });
 
@@ -264,23 +306,61 @@ class _ChatPageState extends State<ChatPage> {
   /// Sends [forcedText] (a tapped quick-reply label) or, if omitted, the
   /// current contents of the text field. Both typed/transcribed text and
   /// quick-reply taps go through the exact same orchestrator pipeline.
-  Future<void> _sendMessage([String? forcedText]) async {
+  Future<void> _sendMessage([String? forcedText, bool fromGuided = false]) async {
     if (_isBootstrapping) return;
     final prompt = forcedText ?? _controller.text.trim();
     if (prompt.isEmpty) return;
 
+    if (!fromGuided && forcedText == null && _semanticInterpreter == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text(
+          'O interpretador local não foi inicializado.',
+        ),
+      ));
+      return;
+    }
+
     setState(() {
       _messages.add(Message('user', prompt));
-      if (forcedText == null) _controller.clear();
+      if (!fromGuided && forcedText == null) _controller.clear();
       _isLoading = true;
     });
 
     final reply = await _getOrchestratorReply(prompt);
+    if (!mounted) return;
+    _presentReply(reply);
+  }
 
+  Future<void> _sendGuidedValue(String value) =>
+      _sendMessage(value, true);
+
+  Future<void> _exitGuidedMode() async {
+    if (_isLoading) return;
+    setState(() => _isLoading = true);
+    final reply = await _orchestrator.exitGuidedMode();
+    if (!mounted) return;
+    _presentReply(reply);
+  }
+
+  void _presentReply(OrchestratorReply reply) {
+    final guidedKind = reply.guidedFieldKind;
     setState(() {
-      _messages.add(
-        Message('assistant', reply.text, quickReplies: reply.quickReplies),
-      );
+      if (guidedKind == null) {
+        _messages.add(
+          Message('assistant', reply.text, quickReplies: reply.quickReplies),
+        );
+      }
+      _guidedPrompt = guidedKind == null
+          ? null
+          : _GuidedPrompt(
+              moduleId: reply.guidedModuleId ?? 'event-context',
+              kind: guidedKind,
+              question: reply.text,
+              options: reply.quickReplies ?? const [],
+              numericInputHint: reply.numericInputHint,
+            );
+      _interactionMode =
+          guidedKind == null ? _InteractionMode.free : _InteractionMode.guided;
       _isLoading = false;
     });
   }
@@ -289,20 +369,15 @@ class _ChatPageState extends State<ChatPage> {
   /// (`ConversationOrchestrator`). Gemma never generates the text shown to
   /// the user directly — see nlu.dart / orchestrator.dart.
   Future<OrchestratorReply> _getOrchestratorReply(String prompt) async {
-    final parent = _llamaParent;
-    final classifier = parent != null && parent.status == LlamaStatus.ready
-        ? IntentClassifier(parent)
-        : null;
-    return _orchestrator.respond(prompt, classifier);
+    return _orchestrator.respond(prompt, _semanticInterpreter);
   }
 
   /// The FSM's single approved exception: a `question` event delegates
-  /// here for a free-text answer. The loaded model's sampler is fixed to
-  /// the classifier's JSON grammar for its whole lifetime (see
-  /// `_initLocalModel`), so it cannot also generate free text — this
-  /// returns the most relevant retrieved knowledge instead of an LLM
-  /// generation until a separate, non-grammar-constrained model path
-  /// exists for education answers.
+  /// here for a free-text answer. Per AGENTS.md, the on-device LLM's only
+  /// job is structured extraction (see `nlu.dart`), so education answers
+  /// are served from retrieved knowledge instead of a free-text LLM
+  /// generation — this is an architecture boundary, not a technical
+  /// limitation of the current backend.
   Future<String> _answerEducationQuestion(String question) async {
     final chunks = await _rag.retrieve(question);
     if (chunks.isEmpty) {
@@ -315,15 +390,24 @@ class _ChatPageState extends State<ChatPage> {
     String modelPath, {
     bool showError = true,
   }) async {
-    if (_llamaParent != null) return true;
+    if (_llmRuntime?.status == LLMStatus.ready) return true;
+    if (_llmRuntime != null) {
+      await _llmRuntime!.dispose();
+      if (mounted) {
+        setState(() {
+          _llmRuntime = null;
+          _semanticInterpreter = null;
+        });
+      }
+    }
     if (_modelLoading) return false;
 
     // Android's scoped storage blocks native mmap/open() access to
     // /sdcard paths unless "All files access" is granted — a special
     // app-op the user must toggle in system Settings, it cannot be
     // granted via a normal permission dialog. Without it, Dart-level
-    // `existsSync()` can still succeed while llama.cpp's native file open
-    // fails with an opaque LlamaException, so this must be checked first.
+    // `existsSync()` can still succeed while the native model file open
+    // fails with an opaque error, so this must be checked first.
     if (!await Permission.manageExternalStorage.isGranted) {
       final status = await Permission.manageExternalStorage.request();
       if (!status.isGranted) {
@@ -338,15 +422,16 @@ class _ChatPageState extends State<ChatPage> {
       }
     }
 
-    // Fail fast with a clear message if the gguf simply isn't on the
-    // device yet, instead of letting llama.cpp try to mmap a missing/huge
-    // path natively, which can hang the UI thread and appear to crash.
+    // Fail fast with a clear message if the model file simply isn't on
+    // the device yet, instead of letting the native runtime map a
+    // missing/huge path natively, which can hang the UI thread and appear
+    // to crash.
     if (!File(modelPath).existsSync()) {
       if (showError && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(
                 'Modelo não encontrado em $modelPath. Copie o arquivo '
-                '.gguf para essa pasta no dispositivo antes de continuar.')));
+                '.litertlm para essa pasta no dispositivo antes de continuar.')));
       }
       return false;
     }
@@ -355,52 +440,23 @@ class _ChatPageState extends State<ChatPage> {
       _modelLoading = true;
     });
 
-    // Assume the native llama shared library is available as 'libllama.so' in app
-    Llama.libraryPath = 'libllama.so';
-
-    // Our bundled libllama.so is compiled CPU-only (no Vulkan/OpenCL/CUDA
-    // backend). The package's ModelParams() defaults (splitMode = none,
-    // mainGpu = 0) make llama.cpp validate `main_gpu` against the number
-    // of registered GPU devices, which is 0 on a CPU-only build, causing
-    // "invalid value for main_gpu: 0 (available devices: 0)" and an
-    // immediate load failure. Setting mainGpu = -1 and nGpuLayers = 0
-    // makes llama.cpp skip that check and run fully on CPU.
-    final modelParams = ModelParams()
-      ..nGpuLayers = 0
-      ..mainGpu = -1;
-
-    // The multi-event few-shot system prompt (see IntentClassifier) is
-    // ~1200 tokens on its own — nCtx must comfortably exceed prompt +
-    // user text + generated JSON, or the model has zero room left to
-    // generate anything and silently returns an empty completion (this
-    // previously caused every message to fall back to "unknown", not a
-    // parsing bug). nPredict caps generation length so a rambling
-    // completion can't run on indefinitely.
-    final contextParams = ContextParams()
-      ..nCtx = 2048
-      ..nBatch = 256
-      ..nUbatch = 256
-      ..nPredict = 200;
-
-    // Greedy + grammar-constrained: this model only ever does structured
-    // JSON extraction (never free-form chat), so deterministic decoding
-    // constrained to IntentClassifier.grammar is faster than sampling and
-    // guarantees valid, parseable output every time.
-    final samplerParams = SamplerParams()
-      ..greedy = true
-      ..grammarStr = IntentClassifier.grammar
-      ..grammarRoot = 'root';
-
-    final loadCommand = LlamaLoad(
-      path: modelPath,
-      modelParams: modelParams,
-      contextParams: contextParams,
-      samplingParams: samplerParams,
-    );
-
-    final parent = LlamaParent(loadCommand);
+    // The runtime owns native configuration and keeps this UI independent
+    // from the LiteRT-LM backend implementation.
     try {
-      await parent.init();
+      final runtime = await LocalLLMRuntime.load(modelPath: modelPath);
+      if (!mounted) {
+        await runtime.dispose();
+        return false;
+      }
+      setState(() {
+        _llmRuntime = runtime;
+        _semanticInterpreter = IntentClassifier(
+          runtime,
+          diagnostics: _semanticDiagnostics,
+        );
+        _modelLoading = false;
+      });
+      return true;
     } catch (e) {
       setState(() {
         _modelLoading = false;
@@ -412,17 +468,124 @@ class _ChatPageState extends State<ChatPage> {
       return false;
     }
 
-    setState(() {
-      _llamaParent = parent;
-      _modelLoading = false;
-    });
-    return true;
   }
 
   void _clearConversation() {
     setState(() {
       _messages.clear();
     });
+  }
+
+  void _showSemanticDiagnostics() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: ValueListenableBuilder<SemanticDebugSnapshot?>(
+            valueListenable: _semanticDiagnostics.latest,
+            builder: (context, snapshot, _) {
+              final data = snapshot;
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.bug_report_outlined),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Text(
+                          'Diagnóstico da interpretação',
+                          style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close),
+                        tooltip: 'Fechar',
+                        onPressed: () => Navigator.of(sheetContext).pop(),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    data?.summary ??
+                        'Nenhuma mensagem em modo livre foi interpretada nesta sessão.',
+                    style: Theme.of(context).textTheme.bodyLarge,
+                  ),
+                  const SizedBox(height: 16),
+                  _DiagnosticLine(
+                    label: 'Modelo local',
+                    value: _llmRuntime?.status.name ?? 'não inicializado',
+                  ),
+                  _DiagnosticLine(
+                    label: 'Etapa',
+                    value: data?.stage ?? 'sem execução',
+                  ),
+                  _DiagnosticLine(
+                    label: 'Saída do modelo',
+                    value: data == null
+                        ? 'sem execução'
+                        : '${data.outputCharacters} caracteres',
+                  ),
+                  _DiagnosticLine(
+                    label: 'JSON estruturado',
+                    value: data?.hasJson == null
+                        ? 'não avaliado'
+                        : data!.hasJson!
+                            ? 'sim'
+                            : 'não',
+                  ),
+                  _DiagnosticLine(
+                    label: 'Eventos detectados',
+                    value: data == null || data.eventNames.isEmpty
+                        ? 'nenhum'
+                        : data.eventNames.join(', '),
+                  ),
+                  _DiagnosticLine(
+                    label: 'Confiança',
+                    value: data?.confidence?.toStringAsFixed(2) ?? 'não disponível',
+                  ),
+                  if (data?.timedOut == true)
+                    const _DiagnosticLine(
+                      label: 'Tempo limite',
+                      value: 'a geração excedeu 30 segundos',
+                    ),
+                  if (data?.failure != null)
+                    _DiagnosticLine(
+                      label: 'Erro nativo',
+                      value: data!.failure!,
+                      isError: true,
+                    ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Este painel não armazena nem mostra o texto digitado ou a resposta bruta do modelo.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.list_alt_outlined),
+                    label: const Text('Ver histórico técnico'),
+                    onPressed: () => Navigator.of(sheetContext).push(
+                      MaterialPageRoute(
+                        builder: (_) => TalkerScreen(
+                          talker: _talker,
+                          appBarTitle: 'Histórico técnico',
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _clearDebugData() async {
@@ -462,9 +625,8 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
-    _tokenSub?.cancel();
-    _compSub?.cancel();
-    _llamaParent?.dispose();
+    _llmRuntime?.dispose();
+    _semanticDiagnostics.dispose();
     _rag.dispose();
     _stt.dispose();
     _recordingTimer?.cancel();
@@ -623,7 +785,7 @@ class _ChatPageState extends State<ChatPage> {
             Text(error, textAlign: TextAlign.center),
             const SizedBox(height: 12),
             const Text(
-              'Verifique o arquivo GGUF e a permissão de acesso a todos os arquivos.',
+              'Verifique o arquivo .litertlm e a permissão de acesso a todos os arquivos.',
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 20),
@@ -644,6 +806,12 @@ class _ChatPageState extends State<ChatPage> {
       appBar: AppBar(
         title: const Text('Diabot'),
         actions: [
+          if (kDebugMode)
+            IconButton(
+              icon: const Icon(Icons.bug_report_outlined),
+              onPressed: _showSemanticDiagnostics,
+              tooltip: 'Diagnóstico da interpretação',
+            ),
           if (kDebugMode)
             IconButton(
               icon: const Icon(Icons.delete_forever_outlined),
@@ -678,7 +846,7 @@ class _ChatPageState extends State<ChatPage> {
               if (path != null && path.isNotEmpty) {
                 await _initLocalModel(path);
                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  content: Text(_llamaParent != null
+                  content: Text(_llmRuntime != null
                       ? 'Modelo local inicializado.'
                       : 'Falha ao inicializar modelo.'),
                 ));
@@ -720,13 +888,6 @@ class _ChatPageState extends State<ChatPage> {
                     itemBuilder: (context, index) {
                       final message = _messages[index];
                       final isUser = message.role == 'user';
-                      final isLastAssistantMessage = !isUser &&
-                          !_isLoading &&
-                          index == _messages.length - 1;
-                      final showQuickReplies = isLastAssistantMessage &&
-                          (message.quickReplies?.isNotEmpty ?? false);
-                      final showNumericInput = isLastAssistantMessage &&
-                          message.numericInputHint != null;
                       return Container(
                         margin: const EdgeInsets.symmetric(vertical: 6),
                         child: Column(
@@ -764,32 +925,6 @@ class _ChatPageState extends State<ChatPage> {
                                 ),
                               ),
                             ),
-                            if (showQuickReplies)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 8),
-                                child: Wrap(
-                                  spacing: 8,
-                                  runSpacing: 8,
-                                  children: [
-                                    for (final option in message.quickReplies!)
-                                      ActionChip(
-                                        label: Text(option),
-                                        onPressed: () => _sendMessage(option),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            if (showNumericInput)
-                              Padding(
-                                padding: const EdgeInsets.only(top: 8),
-                                child: SizedBox(
-                                  width: 260,
-                                  child: _NumericInputRow(
-                                    hint: message.numericInputHint!,
-                                    onSubmit: _sendMessage,
-                                  ),
-                                ),
-                              ),
                           ],
                         ),
                       );
@@ -817,84 +952,132 @@ class _ChatPageState extends State<ChatPage> {
                     child: LinearProgressIndicator(),
                   ),
                 const Divider(height: 1),
-                SafeArea(
-                  top: false,
-                  child: Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: _isRecording
-                              ? _buildRecordingIndicator()
-                              : _isTranscribing
-                                  ? _buildTranscribingIndicator()
-                                  : TextField(
-                                      controller: _controller,
-                                      decoration: const InputDecoration(
-                                        hintText:
-                                            'Escreva aqui ou clique no microfone '
-                                            'para falar',
-                                        border: OutlineInputBorder(),
-                                      ),
-                                      minLines: 1,
-                                      maxLines: 4,
-                                      textInputAction: TextInputAction.send,
-                                      onSubmitted: (_) => _sendMessage(),
-                                    ),
+                _interactionMode == _InteractionMode.guided &&
+                        _guidedPrompt != null
+                    ? SafeArea(
+                        top: false,
+                        child: _GuidedInputPanel(
+                          key: ValueKey(_guidedPrompt!.question),
+                          prompt: _guidedPrompt!,
+                          isLoading: _isLoading,
+                          onSubmit: _sendGuidedValue,
+                          onExit: _exitGuidedMode,
                         ),
-                        const SizedBox(width: 8),
-                        IconButton.filledTonal(
-                          onPressed: (_isLoading || _isTranscribing)
-                              ? null
-                              : _toggleRecording,
-                          style: _isRecording
-                              ? IconButton.styleFrom(
-                                  backgroundColor: Theme.of(context)
-                                      .colorScheme
-                                      .errorContainer,
-                                )
-                              : null,
-                          icon: Icon(_isRecording ? Icons.stop : Icons.mic),
-                          tooltip: _isRecording
-                              ? 'Parar grava\u00e7\u00e3o'
-                              : 'Gravar mensagem de voz',
-                        ),
-                        const SizedBox(width: 8),
-                        ElevatedButton(
-                          onPressed:
-                              (_isLoading || _isRecording || _isTranscribing)
-                                  ? null
-                                  : _sendMessage,
-                          child: const Text('Enviar'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+                      )
+                    : _buildFreeInput(),
                 const SizedBox(height: 8),
               ],
             ),
     );
   }
+
+  Widget _buildFreeInput() {
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Row(
+          children: [
+            Expanded(
+              child: _isRecording
+                  ? _buildRecordingIndicator()
+                  : _isTranscribing
+                      ? _buildTranscribingIndicator()
+                      : TextField(
+                          controller: _controller,
+                          decoration: const InputDecoration(
+                            hintText:
+                                'Escreva aqui ou clique no microfone para falar',
+                            border: OutlineInputBorder(),
+                          ),
+                          minLines: 1,
+                          maxLines: 4,
+                          textInputAction: TextInputAction.send,
+                          onSubmitted: (_) => _sendMessage(),
+                        ),
+            ),
+            const SizedBox(width: 8),
+            IconButton.filledTonal(
+              onPressed: (_isLoading || _isTranscribing)
+                  ? null
+                  : _toggleRecording,
+              style: _isRecording
+                  ? IconButton.styleFrom(
+                      backgroundColor:
+                          Theme.of(context).colorScheme.errorContainer,
+                    )
+                  : null,
+              icon: Icon(_isRecording ? Icons.stop : Icons.mic),
+              tooltip: _isRecording ? 'Parar gravação' : 'Gravar mensagem de voz',
+            ),
+            const SizedBox(width: 8),
+            ElevatedButton(
+              onPressed: (_isLoading || _isRecording || _isTranscribing)
+                  ? null
+                  : _sendMessage,
+              child: const Text('Enviar'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
-/// A small numeric text entry + send button, shown under the last
-/// assistant message when [ConversationOrchestrator] expects a data value
-/// (grams of carbs, a glucose reading, insulin units) rather than a fixed
-/// choice. Submitting feeds the typed value through the same
-/// `_sendMessage` pipeline as regular typed/voice/quick-reply input.
-class _NumericInputRow extends StatefulWidget {
-  final String hint;
-  final ValueChanged<String> onSubmit;
+class _DiagnosticLine extends StatelessWidget {
+  const _DiagnosticLine({
+    required this.label,
+    required this.value,
+    this.isError = false,
+  });
 
-  const _NumericInputRow({required this.hint, required this.onSubmit});
+  final String label;
+  final String value;
+  final bool isError;
 
   @override
-  State<_NumericInputRow> createState() => _NumericInputRowState();
+  Widget build(BuildContext context) {
+    final color = isError ? Theme.of(context).colorScheme.error : null;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: RichText(
+        text: TextSpan(
+          style: Theme.of(context).textTheme.bodyMedium,
+          children: [
+            TextSpan(
+              text: '$label: ',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            TextSpan(text: value, style: TextStyle(color: color)),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
-class _NumericInputRowState extends State<_NumericInputRow> {
+/// The only input surface shown while the FSM is collecting a field or
+/// context. It submits deterministic control values directly to the Kernel;
+/// it never sends this data through the free-text semantic interpreter.
+class _GuidedInputPanel extends StatefulWidget {
+  const _GuidedInputPanel({
+    super.key,
+    required this.prompt,
+    required this.isLoading,
+    required this.onSubmit,
+    required this.onExit,
+  });
+
+  final _GuidedPrompt prompt;
+  final bool isLoading;
+  final ValueChanged<String> onSubmit;
+  final VoidCallback onExit;
+
+  @override
+  State<_GuidedInputPanel> createState() => _GuidedInputPanelState();
+}
+
+class _GuidedInputPanelState extends State<_GuidedInputPanel> {
   final _controller = TextEditingController();
 
   @override
@@ -905,34 +1088,83 @@ class _NumericInputRowState extends State<_NumericInputRow> {
 
   void _submit() {
     final text = _controller.text.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty || widget.isLoading) return;
     widget.onSubmit(text);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Expanded(
-          child: TextField(
-            controller: _controller,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: InputDecoration(
-              isDense: true,
-              hintText: widget.hint,
-              border: const OutlineInputBorder(),
-            ),
-            textInputAction: TextInputAction.send,
-            onSubmitted: (_) => _submit(),
+    final prompt = widget.prompt;
+    final usesOptions = prompt.options.isNotEmpty;
+    final numeric = prompt.kind == FieldKind.number;
+    final module = GuidedModuleCatalog.byId(prompt.moduleId);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(module.icon, color: Theme.of(context).colorScheme.primary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  UiText.current.get(module.titleKey),
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: widget.isLoading ? null : widget.onExit,
+                icon: const Icon(Icons.close),
+                label: Text(UiText.current.get('guided.exit')),
+              ),
+            ],
           ),
-        ),
-        const SizedBox(width: 8),
-        IconButton.filledTonal(
-          onPressed: _submit,
-          icon: const Icon(Icons.send),
-        ),
-      ],
+          if (usesOptions)
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final option in prompt.options)
+                  OutlinedButton(
+                    onPressed: widget.isLoading
+                        ? null
+                        : () => widget.onSubmit(option),
+                    child: Text(option),
+                  ),
+              ],
+            )
+          else
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _controller,
+                    keyboardType: numeric
+                        ? const TextInputType.numberWithOptions(decimal: true)
+                        : TextInputType.text,
+                    decoration: InputDecoration(
+                        hintText: prompt.numericInputHint ??
+                          UiText.current.get('guided.inputHint'),
+                      border: const OutlineInputBorder(),
+                    ),
+                    minLines: numeric ? 1 : 1,
+                    maxLines: numeric ? 1 : 3,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => _submit(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filled(
+                  onPressed: widget.isLoading ? null : _submit,
+                  icon: const Icon(Icons.send),
+                  tooltip: UiText.current.get('guided.submitTooltip'),
+                ),
+              ],
+            ),
+        ],
+      ),
     );
   }
 }

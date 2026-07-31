@@ -14,7 +14,7 @@ Use this software only as an educational and logging aid. Follow your own clinic
 Data handling differs by application:
 
 - **GlycoGuide** keeps its SQLite database locally by default. It sends requests to the configured Ollama endpoint and, when enabled, sends LibreLinkUp credentials to Abbott to authenticate and retrieve shared data. The default Ollama endpoint is loopback, but a non-local `OLLAMA_BASE_URL` changes that boundary.
-- **Diabot** stores event logs and FSM audit records in local SQLite and keeps the onboarding profile in local preferences. Firebase/Google authentication is an external service. Its bundled RAG and speech models run on-device; its external Gemma GGUF is loaded from device storage.
+- **Diabot** stores event logs and FSM audit records in local SQLite and keeps the onboarding profile in local preferences. Firebase/Google authentication is an external service. Its bundled RAG and speech models run on-device; its external Gemma 4 E4B `.litertlm` model (run via `flutter_gemma`) is loaded from device storage.
 
 Health records and profiles are not encrypted at rest by Diabot. GlycoGuide encrypts the saved LibreLinkUp password, but its local database still contains health data. Treat development devices accordingly.
 
@@ -81,6 +81,8 @@ Diabot is not a Flutter client for GlycoGuide. It is a separate Android-first pr
 - No insulin-dose calculation, treatment recommendation, emergency calling, live CGM feed, trend analysis, charts, CSV export, or cloud sync of health records.
 - `cgm` and `profile` events are recognized but do not yet have complete collection workflows.
 - The external Gemma model only extracts structured events. It does not generate the user-facing conversation. Without it, deterministic quick replies and bare numeric glucose entries still work; unconstrained free text is clarified instead.
+- Free-text input first passes through a generic on-device semantic interpreter, which returns structured event candidates and fields for the deterministic Kernel. When an interpretation is ambiguous or below the confidence threshold, `Outras opções` opens the generic event menu without discarding a pending event, so the user can change topic or register another event.
+- When a meal is identified, the deterministic Meal module first distinguishes food already consumed from a planned meal. Recorded meals collect stated carbohydrate grams and optional food details; planned meals collect intended foods and an optional user-provided carbohydrate estimate. It records context only and never calculates or recommends an insulin dose.
 - Diabot preserves its local profile, SQLite data, and authentication session across build updates. Debug builds expose a confirmed in-app action to erase local test data when a clean onboarding run is needed.
 
 ### Requirements
@@ -89,7 +91,7 @@ Diabot is not a Flutter client for GlycoGuide. It is a separate Android-first pr
 - Android device or emulator.
 - Valid Firebase Android configuration for authentication.
 - Bundled assets for RAG and STT. They are intentionally not all committed to Git because model files are large.
-- Optional free-text event extraction: a compatible Gemma GGUF copied to the device, normally `/sdcard/Download/gemma-3-4b-Q4_0.gguf`.
+- Optional free-text event extraction: a compatible Gemma 4 E4B `.litertlm` model copied to the device, normally `/sdcard/Download/gemma-4-E4B-it.litertlm`.
 
 Diabot does **not** require Ollama.
 
@@ -103,7 +105,7 @@ flutter test test/fsm_mermaid_contract_test.dart
 flutter run
 ```
 
-For the external GGUF, copy the file to the configured device path and grant Diabot Android's **All files access** permission. After login, Diabot loads the external model automatically before starting the chat or first-login onboarding; if either prerequisite is unavailable, it waits and offers a retry. RAG and speech models load only after the GGUF is ready, sequentially.
+For the external model, copy the `.litertlm` file to the configured device path and grant Diabot Android's **All files access** permission. After login, Diabot loads the external model automatically before starting the chat or first-login onboarding; if either prerequisite is unavailable, it waits and offers a retry. RAG and speech models load only after the model is ready, sequentially.
 
 ### FSM kernel
 
@@ -159,7 +161,9 @@ diabot/              Independent Flutter Android-first application
                      Known-only projection of profile context
   lib/time_engine.dart
                      Timestamped local event context
-  lib/nlu.dart       Grammar-constrained semantic event extraction
+  lib/llm_runtime.dart
+                     On-device Gemma 4 E4B runtime (flutter_gemma)
+  lib/nlu.dart       Prompt-based semantic event extraction
   lib/rag.dart       Local retrieval-only education service
   lib/stt.dart       On-device speech-to-text service
   test/              FSM and widget tests

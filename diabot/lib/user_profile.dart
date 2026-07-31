@@ -6,7 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 ///
 /// This data never leaves the device: it is persisted only via
 /// [SharedPreferences] and is used to personalize the on-device Gemma
-/// system prompt (see `_queryOllama` in `main.dart`).
+/// system prompt used by the local language-model runtime.
 class UserProfile {
   static const _prefsKey = 'diabot_user_profile';
 

@@ -1,0 +1,16 @@
+{
+    "module.glucose.title": "Glicemia",
+    "module.insulin.title": "Insulina",
+    "module.meal.title": "Refeição",
+    "module.exercise.title": "Exercício",
+    "module.illness.title": "Doença",
+    "module.ketones.title": "Cetonas",
+    "module.medication.title": "Medicamento",
+    "module.symptoms.title": "Sintomas",
+    "module.onboarding.title": "Perfil inicial",
+    "module.emergency.title": "Atenção imediata",
+    "module.eventContext.title": "Contexto do registro",
+    "guided.exit": "Sair",
+    "guided.inputHint": "Digite sua resposta",
+    "guided.submitTooltip": "Enviar resposta"
+}

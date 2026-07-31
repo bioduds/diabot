@@ -2,8 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart' show rootBundle;
-import 'package:llama_cpp_dart/llama_cpp_dart.dart';
 import 'package:path_provider/path_provider.dart';
+
+import 'llm_runtime.dart';
 
 /// One precomputed knowledge-base chunk with its embedding vector.
 class _KnowledgeChunk {
@@ -22,16 +23,12 @@ class _KnowledgeChunk {
 /// at query time, embeds the user's question with a second on-device
 /// EmbeddingGemma model to find the most relevant chunks via cosine
 /// similarity (dot product, since vectors are L2-normalized).
-///
-/// This runs alongside the main Gemma 3 1B chat model (a separate
-/// `Llama` instance/model), so both models are resident in memory at
-/// the same time.
 class RagService {
   static const _modelAssetPath = 'assets/models/embeddinggemma-300m-Q4_0.gguf';
   static const _embeddingsAssetPath = 'assets/rag/knowledge_embeddings.json';
   static const _modelFileName = 'embeddinggemma-300m-Q4_0.gguf';
 
-  Llama? _llama;
+  LocalLLMEmbeddingRuntime? _embeddingRuntime;
   List<_KnowledgeChunk> _chunks = [];
   bool _ready = false;
 
@@ -57,23 +54,7 @@ class RagService {
 
     final modelPath = await _ensureModelFileOnDisk();
 
-    Llama.libraryPath ??= 'libllama.so';
-
-    final modelParams = ModelParams()
-      ..nGpuLayers = 0
-      ..mainGpu = -1;
-    final contextParams = ContextParams()
-      ..embeddings = true
-      ..poolingType = LlamaPoolingType.mean
-      ..nCtx = 512
-      ..nBatch = 512
-      ..nUbatch = 512;
-
-    _llama = Llama(
-      modelPath,
-      modelParams: modelParams,
-      contextParams: contextParams,
-    );
+    _embeddingRuntime = LocalLLMEmbeddingRuntime.load(modelPath);
 
     _ready = true;
   }
@@ -96,12 +77,12 @@ class RagService {
   /// Returns the [topK] most relevant knowledge-base chunk texts for
   /// [query], or an empty list if the RAG service isn't ready yet.
   Future<List<String>> retrieve(String query, {int topK = 3}) async {
-    if (!_ready || _llama == null || _chunks.isEmpty) return const [];
+    if (!_ready || _embeddingRuntime == null || _chunks.isEmpty) return const [];
 
     final queryPrompt = 'task: search result | query: $query';
     final List<double> queryVector;
     try {
-      queryVector = _llama!.getEmbeddings(queryPrompt);
+      queryVector = _embeddingRuntime!.embed(queryPrompt);
     } catch (_) {
       return const [];
     }
@@ -124,8 +105,8 @@ class RagService {
   }
 
   void dispose() {
-    _llama?.dispose();
-    _llama = null;
+    _embeddingRuntime?.dispose();
+    _embeddingRuntime = null;
     _ready = false;
   }
 }

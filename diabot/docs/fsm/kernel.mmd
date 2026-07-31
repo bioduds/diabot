@@ -1,4 +1,4 @@
-%% fsm-contract: {"activeStates":["idle","parsing","prioritizing","waitingInformation","enrichingContext","validating","storing","clarification","resuming","emergency","onboarding","education"],"stubStates":["learningUser"],"eventTypes":["symptoms","glucose","insulin","meal","exercise","illness","ketones","medication","cgm","profile","question","unknown"],"priority":["symptoms","glucose","insulin","meal","exercise","illness","ketones","medication","cgm","profile","question","unknown"]}
+%% fsm-contract: {"activeStates":["idle","parsing","prioritizing","waitingInformation","enrichingContext","validating","storing","clarification","resuming","emergency","onboarding","education"],"stubStates":["learningUser"],"eventTypes":["symptoms","glucose","insulin","meal","exercise","illness","ketones","medication","cgm","profile","question","unknown"],"priority":["symptoms","glucose","insulin","meal","exercise","illness","ketones","medication","cgm","profile","question","unknown"],"interactionModes":["free","guided"],"freeModeInput":"conversation-text-to-semantic-interpreter","guidedModeInput":"field-specific-controls","guidedModeExit":"preserve-stack-return-free-input","interactionModesChangeGlobalState":false,"interactionModesChangeLifecycle":false}
 %% This contract is checked by test/fsm_mermaid_contract_test.dart.
 flowchart TD
   AUTH[Authenticated user] --> MODEL[Automatically load local model]
@@ -11,7 +11,10 @@ flowchart TD
   INIT -->|profile saved| IDLE
   PROFILE -->|yes| IDLE
 
-  USER[User input] --> RESPOND[ConversationOrchestrator respond]
+  FREE[Free mode: conversation text] --> INTERPRETER[SemanticInterpreter]
+  INTERPRETER -->|event candidates| RESPOND[ConversationOrchestrator respond]
+  USER[Guided mode: field-specific controls] --> RESPOND
+  GUIDED_EXIT[Guided mode: Sair] -->|preserve stack| FREE
   RESPOND --> E{state emergency}
   E -->|yes| EP[Emergency protocol]
   EP -->|complete| RESUME[resuming]
@@ -22,11 +25,15 @@ flowchart TD
   CTX -->|no| PENDING{required field pending}
   PENDING -->|yes| FILL[Fill required field or topic switch]
   PENDING -->|no| PARSING[parsing]
-  PARSING --> INPUT{deterministic input}
+  FILL -->|Outras opções| OPTIONS[Generic action menu]
+  CONTEXT -->|Outras opções| OPTIONS
+  OPTIONS --> USER
+  PARSING --> INPUT{Input shape}
   INPUT -->|shortcut| STACK[Event stack]
   INPUT -->|bare number| STACK
-  INPUT -->|free text| PARSER[Optional semantic parser]
-  PARSER --> STACK
+  INPUT -->|free text| INTERPRETER
+  INTERPRETER -->|structured event candidates| STACK
+  INTERPRETER -->|ambiguous or low confidence| CLARIFICATION[clarification]
   QUESTION --> STACK
   RESUME --> STACK
   CONTEXT --> STACK
@@ -43,11 +50,12 @@ flowchart TD
   GLOBAL_CONTEXT --> KNOWLEDGE[Knowledge engine]
   ACTIVE --> KNOWLEDGE
   KNOWLEDGE -->|missing|required[waitingInformation]
-  required --> USER
+  required --> GUIDED[Guided mode]
+  GUIDED --> USER
   KNOWLEDGE -->|complete| OPTIONAL[enrichingContext]
   OPTIONAL -->|skip or complete| VALIDATING[validating]
   VALIDATING -->|invalid| CLARIFICATION[clarification]
-  CLARIFICATION --> USER
+  CLARIFICATION --> GUIDED
   VALIDATING -->|valid| STORING[storing]
   STORING --> IDLE[idle]
   IDLE --> NEXT[Suggested next actions]

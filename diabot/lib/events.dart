@@ -131,6 +131,78 @@ class FsmContract {
     'escalated->validating',
   ];
 
+  static const semanticInterpreterInputs = ['free-text'];
+  static const semanticInterpreterOutputs = [
+    'event-candidates',
+    'entities',
+    'confidence',
+  ];
+  static const semanticInterpreterMinimumConfidence = 0.5;
+  static const semanticInterpreterChangesGlobalState = false;
+  static const semanticInterpreterChangesLifecycle = false;
+  static const semanticInterpreterDoesMedicalReasoning = false;
+
+  static const interactionModes = ['free', 'guided'];
+  static const freeModeInput = 'conversation-text-to-semantic-interpreter';
+  static const guidedModeInput = 'field-specific-controls';
+  static const guidedModeExit = 'preserve-stack-return-free-input';
+  static const interactionModesChangeGlobalState = false;
+  static const interactionModesChangeLifecycle = false;
+
+  static const guidedEventModules = [
+    EventType.glucose,
+    EventType.insulin,
+    EventType.meal,
+    EventType.exercise,
+    EventType.illness,
+    EventType.ketones,
+    EventType.medication,
+    EventType.symptoms,
+  ];
+  static const supportModules = [
+    'onboarding',
+    'emergency',
+    'event-context',
+    'profile',
+    'education',
+    'cgm',
+  ];
+  static const moduleIdentity = 'canonical-event-type-or-support-id';
+  static const moduleTitleSource = 'localized-module-catalog';
+  static const moduleGuidedControls = 'field-spec-kind-and-canonical-option-id';
+  static const moduleSemanticRouting = 'llm-event-candidates-only';
+  static const moduleKernelHumanLanguage = false;
+  static const modulesChangeGlobalState = false;
+  static const modulesChangeLifecycle = false;
+
+  static const mealFields = [
+    'mealStatus',
+    'carbsKnown',
+    'carbsGrams',
+    'foodDetailsOptIn',
+    'foodDetails',
+    'plannedFoods',
+    'plannedCarbsKnown',
+    'plannedCarbsGrams',
+  ];
+  static const mealRecordedPath = [
+    'mealStatus=alreadyEaten',
+    'carbsKnown',
+    'carbsGrams?',
+    'foodDetailsOptIn',
+    'foodDetails?',
+    'optional-context',
+    'stored',
+  ];
+  static const mealPlannedPath = [
+    'mealStatus=planned',
+    'plannedFoods',
+    'plannedCarbsKnown',
+    'plannedCarbsGrams?',
+    'optional-context',
+    'stored',
+  ];
+
   static const temporalWindows = {
     'last15Minutes': 15,
     'last1Hour': 60,
@@ -465,12 +537,26 @@ final Map<EventType, List<FieldSpec>> eventDefinitions = {
   ],
   EventType.meal: const [
     FieldSpec(
+      key: 'mealStatus',
+      question: 'Você já se alimentou ou está planejando essa refeição?',
+      kind: FieldKind.option,
+      quickReplies: ['Já comi', 'Ainda não comi'],
+      optionValues: {
+        'já comi': 'alreadyEaten',
+        'ja comi': 'alreadyEaten',
+        'ainda não': 'planned',
+        'ainda nao': 'planned',
+      },
+      priority: 0,
+    ),
+    FieldSpec(
       key: 'carbsKnown',
       question: 'Você sabe aproximadamente quantos gramas de carboidratos '
           'tinha essa refeição?',
       kind: FieldKind.yesNo,
       quickReplies: ['Sim, sei', 'Não sei'],
-      priority: 0,
+      dependsOn: MapEntry('mealStatus', 'alreadyEaten'),
+      priority: 1,
     ),
     FieldSpec(
       key: 'carbsGrams',
@@ -478,7 +564,50 @@ final Map<EventType, List<FieldSpec>> eventDefinitions = {
       kind: FieldKind.number,
       numericInputHint: 'Gramas de carboidrato',
       dependsOn: MapEntry('carbsKnown', true),
+      priority: 2,
+    ),
+    FieldSpec(
+      key: 'foodDetailsOptIn',
+      question: 'Quer detalhar o que você comeu para registrar como contexto?',
+      kind: FieldKind.option,
+      quickReplies: ['Quero detalhar', 'Não agora'],
+      optionValues: {
+        'quero detalhar': 'yes',
+        'não agora': 'no',
+        'nao agora': 'no',
+      },
+      dependsOn: MapEntry('mealStatus', 'alreadyEaten'),
+      priority: 3,
+    ),
+    FieldSpec(
+      key: 'foodDetails',
+      question: 'O que você comeu?',
+      kind: FieldKind.freeText,
+      dependsOn: MapEntry('foodDetailsOptIn', 'yes'),
+      priority: 4,
+    ),
+    FieldSpec(
+      key: 'plannedFoods',
+      question: 'Quais alimentos você pretende consumir?',
+      kind: FieldKind.freeText,
+      dependsOn: MapEntry('mealStatus', 'planned'),
       priority: 1,
+    ),
+    FieldSpec(
+      key: 'plannedCarbsKnown',
+      question: 'Você tem uma estimativa dos carboidratos dessa refeição?',
+      kind: FieldKind.yesNo,
+      quickReplies: ['Sim, tenho', 'Ainda não'],
+      dependsOn: MapEntry('mealStatus', 'planned'),
+      priority: 2,
+    ),
+    FieldSpec(
+      key: 'plannedCarbsGrams',
+      question: 'Quantos gramas de carboidratos você estima, aproximadamente?',
+      kind: FieldKind.number,
+      numericInputHint: 'Estimativa de carboidratos (g)',
+      dependsOn: MapEntry('plannedCarbsKnown', true),
+      priority: 3,
     ),
   ],
   EventType.exercise: const [
@@ -655,7 +784,13 @@ class KnowledgeEngine {
 /// Rejects structurally impossible data only; it never evaluates medical care.
 class ValidationEngine {
   static EventValidation validate(EventInstance event) {
-    for (final key in const ['value', 'dose', 'carbsGrams', 'duration']) {
+    for (final key in const [
+      'value',
+      'dose',
+      'carbsGrams',
+      'plannedCarbsGrams',
+      'duration',
+    ]) {
       final value = event.data[key];
       if (value is num && (!value.isFinite || value < 0)) {
         return EventValidation.invalid(
@@ -897,9 +1032,20 @@ String formatNumber(num value) => value == value.roundToDouble()
 final Map<EventType, String Function(Map<String, dynamic> data)>
     eventCompletionMessages = {
   EventType.meal: (data) {
-    final food = data['food'] as String?;
+    final isPlanned = data['mealStatus'] == 'planned';
+    final food = (isPlanned ? data['plannedFoods'] : data['foodDetails'])
+        as String?;
     final grams = asDouble(data['carbsGrams']);
     final foodPart = food != null ? ' ($food)' : '';
+    if (isPlanned) {
+      final plannedGrams = asDouble(data['plannedCarbsGrams']);
+      if (plannedGrams == null) {
+        return 'Planejamento registrado: refeição$foodPart sem estimativa '
+            'de carboidratos.';
+      }
+      return 'Planejamento registrado: refeição$foodPart com estimativa '
+          'de ${formatNumber(plannedGrams)}g de carboidratos.';
+    }
     if (grams == null) {
       return 'Registrado: refeição$foodPart sem contagem de carboidratos.';
     }

@@ -1,6 +1,6 @@
 # Diabot
 
-Diabot is an Android-first Flutter prototype for structured diabetes event logging. Its finite-state-machine (FSM) kernel controls conversation flow; an optional on-device Gemma GGUF is limited to semantic event extraction.
+Diabot is an Android-first Flutter prototype for structured diabetes event logging. Its finite-state-machine (FSM) kernel controls conversation flow; an optional on-device Gemma 4 E4B model (`.litertlm`, run via `flutter_gemma`) is limited to semantic event extraction.
 
 The authoritative repository documentation is in the [root README](../README.md). It covers architecture, safety limits, storage boundaries, model setup, and the relationship between Diabot and the independent GlycoGuide web app.
 
@@ -13,13 +13,17 @@ flutter test test/fsm_mermaid_contract_test.dart
 flutter run
 ```
 
-Diabot does not use Ollama. To enable free-text semantic extraction, manually copy a compatible GGUF to Android device storage (default: `/sdcard/Download/gemma-3-4b-Q4_0.gguf`) and grant **All files access**. After login, Diabot loads the GGUF automatically before starting the chat or first-login onboarding, with a retry screen when either prerequisite is unavailable.
+Diabot does not use Ollama. To enable free-text semantic extraction, manually copy a compatible Gemma 4 E4B `.litertlm` model to Android device storage (default: `/sdcard/Download/gemma-4-E4B-it.litertlm`) and grant **All files access**. After login, Diabot loads the model automatically before starting the chat or first-login onboarding, with a retry screen when either prerequisite is unavailable.
+
+The model runs through `flutter_gemma`/`flutter_gemma_litertlm` (see [lib/llm_runtime.dart](lib/llm_runtime.dart)); RAG embeddings still run on a separate on-device `llama_cpp_dart` runtime and are unaffected by this. `flutter_gemma` has no grammar/JSON-schema constrained decoding, so structured extraction relies on few-shot prompting plus a defensive parser that discards malformed output rather than a hard grammar.
 
 Without the external model, quick replies and bare numeric glucose entries remain available through the deterministic FSM.
 
+Free-text input enters the generic `SemanticInterpreter`, implemented on-device by the Gemma extractor. It returns structured event candidates and fields rather than conversational output; the deterministic Kernel accepts only interpretations at or above its confidence threshold. The model prompt includes natural-language meal examples such as `Agora a fome apertou`. Every normal collection prompt offers `Outras opções`, which opens the generic event menu while retaining any pending event on the deterministic stack.
+
 ## FSM specification
 
-The persisted FSM maps are [docs/fsm/kernel.mmd](docs/fsm/kernel.mmd), [docs/fsm/lifecycle.mmd](docs/fsm/lifecycle.mmd), [docs/fsm/emergency.mmd](docs/fsm/emergency.mmd), [docs/fsm/time_engine.mmd](docs/fsm/time_engine.mmd), [docs/fsm/profile_engine.mmd](docs/fsm/profile_engine.mmd), [docs/fsm/profile_view.mmd](docs/fsm/profile_view.mmd), [docs/fsm/profile_lifecycle.mmd](docs/fsm/profile_lifecycle.mmd), [docs/fsm/global_context.mmd](docs/fsm/global_context.mmd), and [docs/fsm/initialization.mmd](docs/fsm/initialization.mmd). Mermaid ignores their `%% fsm-contract` JSON headers; the verifier reads those headers and checks them against the canonical Dart contract in [lib/events.dart](lib/events.dart).
+The persisted FSM maps are [docs/fsm/kernel.mmd](docs/fsm/kernel.mmd), [docs/fsm/lifecycle.mmd](docs/fsm/lifecycle.mmd), [docs/fsm/emergency.mmd](docs/fsm/emergency.mmd), [docs/fsm/time_engine.mmd](docs/fsm/time_engine.mmd), [docs/fsm/meal.mmd](docs/fsm/meal.mmd), [docs/fsm/profile_engine.mmd](docs/fsm/profile_engine.mmd), [docs/fsm/profile_view.mmd](docs/fsm/profile_view.mmd), [docs/fsm/profile_lifecycle.mmd](docs/fsm/profile_lifecycle.mmd), [docs/fsm/global_context.mmd](docs/fsm/global_context.mmd), and [docs/fsm/initialization.mmd](docs/fsm/initialization.mmd). Mermaid ignores their `%% fsm-contract` JSON headers; the verifier reads those headers and checks them against the canonical Dart contract in [lib/events.dart](lib/events.dart).
 
 Run the drift check with:
 
@@ -38,6 +42,8 @@ The [lib/profile_view.dart](lib/profile_view.dart) Profile View is a dynamic, kn
 ![Validated Profile View on a Galaxy A56](docs/images/profile-view-a56.png)
 
 The screenshot was captured during device validation and anonymized before inclusion: identity and health values are redacted while the rendered hierarchy remains visible.
+
+The Meal module is declared in [docs/fsm/meal.mmd](docs/fsm/meal.mmd). It uses the existing generic missing-field lifecycle to distinguish a meal already eaten from a planned meal, record food details and stated carbohydrate quantities, and offer generic context. It does not create a global state, change emergency or priority behavior, calculate insulin, or recommend a dose.
 
 The first-login [lib/initialization.dart](lib/initialization.dart) module is entered through the active `onboarding` global state after the external model is ready. It saves the local profile on completion and does not run again while that profile exists.
 

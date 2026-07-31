@@ -1,0 +1,23 @@
+%% fsm-contract: {"eventType":"meal","fields":["mealStatus","carbsKnown","carbsGrams","foodDetailsOptIn","foodDetails","plannedFoods","plannedCarbsKnown","plannedCarbsGrams"],"recordedPath":["mealStatus=alreadyEaten","carbsKnown","carbsGrams?","foodDetailsOptIn","foodDetails?","optional-context","stored"],"plannedPath":["mealStatus=planned","plannedFoods","plannedCarbsKnown","plannedCarbsGrams?","optional-context","stored"],"globalStateChange":false,"lifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"medicalReasoning":false,"insulinDoseCalculation":false}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart TD
+  INPUT[Meal event from user or parser] --> STATUS{Has the user already eaten?}
+
+  STATUS -->|alreadyEaten| CARBS_KNOWN{Carbohydrates known?}
+  CARBS_KNOWN -->|yes| CARBS[Record stated carbohydrate grams]
+  CARBS_KNOWN -->|no| DETAILS{Detail consumed foods?}
+  CARBS --> DETAILS
+  DETAILS -->|yes| FOOD_DETAILS[Record consumed foods]
+  DETAILS -->|no| RECORDED_CONTEXT[Offer optional context]
+  FOOD_DETAILS --> RECORDED_CONTEXT
+
+  STATUS -->|planned| FOODS[Record planned foods]
+  FOODS --> PLANNED_CARBS_KNOWN{Estimated carbohydrates known?}
+  PLANNED_CARBS_KNOWN -->|yes| PLANNED_CARBS[Record stated estimated grams]
+  PLANNED_CARBS_KNOWN -->|no| PLANNED_CONTEXT[Offer optional context]
+  PLANNED_CARBS --> PLANNED_CONTEXT
+
+  RECORDED_CONTEXT --> STORE[Store meal event]
+  PLANNED_CONTEXT --> STORE
+
+  NOTE[Generic missing-field collection only: no new DiabotGlobalState, EventStatus, emergency or priority rule, insulin-dose calculation, or medical recommendation]

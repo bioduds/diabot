@@ -47,6 +47,67 @@ void main() {
     expect(strings(contract, 'lifecycleEdges'), FsmContract.lifecycleEdges);
   });
 
+  test('Semantic Interpreter Mermaid contract preserves Kernel authority', () {
+    final contract = readMermaidContract('$docs/semantic_interpreter.mmd');
+
+    expect(strings(contract, 'inputs'), FsmContract.semanticInterpreterInputs);
+    expect(strings(contract, 'outputs'), FsmContract.semanticInterpreterOutputs);
+    expect(contract['minimumConfidence'],
+        FsmContract.semanticInterpreterMinimumConfidence);
+    expect(contract['globalStateChange'],
+        FsmContract.semanticInterpreterChangesGlobalState);
+    expect(contract['lifecycleChange'],
+        FsmContract.semanticInterpreterChangesLifecycle);
+    expect(contract['medicalReasoning'],
+        FsmContract.semanticInterpreterDoesMedicalReasoning);
+  });
+
+  test('interaction modes keep the FSM and lifecycle authoritative', () {
+    final contract = readMermaidContract('$docs/interaction_modes.mmd');
+
+    expect(strings(contract, 'modes'), FsmContract.interactionModes);
+    expect(contract['freeInput'], FsmContract.freeModeInput);
+    expect(contract['guidedInput'], FsmContract.guidedModeInput);
+    expect(contract['guidedExit'], FsmContract.guidedModeExit);
+    expect(contract['globalStateChange'],
+        FsmContract.interactionModesChangeGlobalState);
+    expect(contract['lifecycleChange'],
+        FsmContract.interactionModesChangeLifecycle);
+  });
+
+  test('module catalog keeps semantic routing and presentation separate', () {
+    final contract = readMermaidContract('$docs/modules.mmd');
+
+    expect(
+      strings(contract, 'guidedEventModules'),
+      names(FsmContract.guidedEventModules),
+    );
+    expect(strings(contract, 'supportModules'), FsmContract.supportModules);
+    expect(contract['moduleIdentity'], FsmContract.moduleIdentity);
+    expect(contract['titleSource'], FsmContract.moduleTitleSource);
+    expect(contract['guidedControls'], FsmContract.moduleGuidedControls);
+    expect(contract['semanticRouting'], FsmContract.moduleSemanticRouting);
+    expect(contract['kernelHumanLanguage'],
+        FsmContract.moduleKernelHumanLanguage);
+    expect(contract['globalStateChange'], FsmContract.modulesChangeGlobalState);
+    expect(contract['lifecycleChange'], FsmContract.modulesChangeLifecycle);
+  });
+
+  test('Meal Mermaid contract preserves generic, non-clinical collection', () {
+    final contract = readMermaidContract('$docs/meal.mmd');
+
+    expect(contract['eventType'], EventType.meal.name);
+    expect(strings(contract, 'fields'), FsmContract.mealFields);
+    expect(strings(contract, 'recordedPath'), FsmContract.mealRecordedPath);
+    expect(strings(contract, 'plannedPath'), FsmContract.mealPlannedPath);
+    expect(contract['globalStateChange'], isFalse);
+    expect(contract['lifecycleChange'], isFalse);
+    expect(contract['emergencyImpact'], isFalse);
+    expect(contract['priorityImpact'], isFalse);
+    expect(contract['medicalReasoning'], isFalse);
+    expect(contract['insulinDoseCalculation'], isFalse);
+  });
+
   test('emergency Mermaid contract matches the engine contract', () {
     final contract = readMermaidContract('$docs/emergency.mmd');
 

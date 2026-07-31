@@ -1,0 +1,11 @@
+%% fsm-contract: {"modes":["free","guided"],"freeInput":"conversation-text-to-semantic-interpreter","guidedInput":"field-specific-controls","guidedExit":"preserve-stack-return-free-input","globalStateChange":false,"lifecycleChange":false}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  FREE[Free mode] -->|conversation text| INTERPRETER[SemanticInterpreter]
+  INTERPRETER -->|structured event candidates| KERNEL[ConversationOrchestrator]
+  KERNEL -->|field or context required| GUIDED[Guided mode]
+  GUIDED -->|buttons, selects, number or text form| KERNEL
+  GUIDED -->|Sair| FREE
+  KERNEL -->|flow complete| FREE
+
+  NOTE[Interaction modes are UI presentation modes. They do not create DiabotGlobalState or EventStatus and do not alter priority, emergency, validation, or persistence authority.]

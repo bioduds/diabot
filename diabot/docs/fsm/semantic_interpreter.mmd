@@ -1,0 +1,10 @@
+%% fsm-contract: {"inputs":["free-text"],"outputs":["event-candidates","entities","confidence"],"minimumConfidence":0.5,"globalStateChange":false,"lifecycleChange":false,"medicalReasoning":false}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  TEXT[Free-text user input] --> INTERPRETER[SemanticInterpreter]
+  INTERPRETER --> STRUCTURED[Structured event candidates, entities, confidence]
+  STRUCTURED --> ACCEPT{Confidence sufficient?}
+  ACCEPT -->|yes| STACK[Event stack]
+  ACCEPT -->|no| CLARIFICATION[Generic clarification and other options]
+
+  NOTE[The interpreter does not create DiabotGlobalState or EventStatus, make medical reasoning, calculate insulin, or generate user-facing guidance]

@@ -12,11 +12,15 @@ class OrchestratorReply {
   final String text;
   final List<String>? quickReplies;
   final String? numericInputHint;
+  final FieldKind? guidedFieldKind;
+  final String? guidedModuleId;
 
   const OrchestratorReply(
     this.text, {
     this.quickReplies,
     this.numericInputHint,
+    this.guidedFieldKind,
+    this.guidedModuleId,
   });
 }
 
@@ -58,26 +62,17 @@ class ConversationOrchestrator {
   final EmergencyEngine _emergencyEngine;
   final ProfileEngine _profileEngine;
 
-  static const Map<String, EventType> _clarificationShortcuts = {
-    'uma refeição': EventType.meal,
-    'exercício': EventType.exercise,
-    'minha glicemia': EventType.glucose,
-    'uma dose de insulina': EventType.insulin,
-    'registrar glicemia': EventType.glucose,
-    'registrar refeição': EventType.meal,
-    'registrar insulina': EventType.insulin,
-    'registrar exercício': EventType.exercise,
-    'estou com sintomas': EventType.symptoms,
-    'registrar doença': EventType.illness,
-    'registrar cetonas': EventType.ketones,
-    'registrar medicamento': EventType.medication,
-  };
-
-  static const List<String> _clarificationQuickReplies = [
+  static const _otherOptions = 'Outras opções';
+  static const List<String> _otherOptionQuickReplies = [
     'Uma refeição',
-    'Exercício',
     'Minha glicemia',
     'Uma dose de insulina',
+    'Exercício',
+    'Estou com sintomas',
+    'Registrar medicamento',
+    'Registrar doença',
+    'Registrar cetonas',
+    'Tenho uma dúvida',
   ];
 
   DiabotGlobalState _state = DiabotGlobalState.idle;
@@ -113,7 +108,7 @@ class ConversationOrchestrator {
   /// tapped quick-reply label / numeric entry — all treated the same way).
   Future<OrchestratorReply> respond(
     String rawText,
-    IntentClassifier? classifier,
+    SemanticInterpreter? interpreter,
   ) async {
     if (_state == DiabotGlobalState.onboarding) {
       return _onboardingReply(await _initializationModule.respond(rawText));
@@ -124,6 +119,14 @@ class ConversationOrchestrator {
       return OrchestratorReply(
         _currentEmergencyQuestion()?.question ?? 'Você está bem agora?',
         quickReplies: _currentEmergencyQuestion()?.quickReplies,
+      );
+    }
+
+    if (rawText.trim().toLowerCase() == _otherOptions.toLowerCase()) {
+      _state = DiabotGlobalState.clarification;
+      return const OrchestratorReply(
+        'Escolha o que você quer registrar ou conversar:',
+        quickReplies: _otherOptionQuickReplies,
       );
     }
 
@@ -157,39 +160,39 @@ class ConversationOrchestrator {
     }
 
     _state = DiabotGlobalState.parsing;
-    await _parseAndPushEvents(rawText, classifier);
+    await _parseAndPushEvents(rawText, interpreter);
     if (_awaitingEducationQuestion) {
       return const OrchestratorReply('Qual é sua dúvida?');
     }
     return _resolveStack();
   }
 
+  /// Leaves only the guided presentation layer. Pending events and their
+  /// lifecycle state remain intact, so a later free-text turn can either
+  /// fill the pending field or be interpreted as a topic switch.
+  Future<OrchestratorReply> exitGuidedMode() async {
+    return const OrchestratorReply(
+      'Preenchimento guiado pausado. Você pode escrever livremente agora.',
+    );
+  }
+
   OrchestratorReply _onboardingReply(InitializationReply reply) {
     if (_initializationModule.isComplete) {
       _state = DiabotGlobalState.idle;
     }
-    return OrchestratorReply(reply.text, quickReplies: reply.quickReplies);
+    return OrchestratorReply(
+      reply.text,
+      quickReplies: reply.quickReplies,
+      guidedFieldKind:
+          _initializationModule.isComplete ? null : FieldKind.freeText,
+        guidedModuleId: _initializationModule.isComplete ? null : 'onboarding',
+    );
   }
 
   Future<void> _parseAndPushEvents(
     String rawText,
-    IntentClassifier? classifier,
+    SemanticInterpreter? interpreter,
   ) async {
-    if (rawText.trim().toLowerCase() == 'tenho uma dúvida') {
-      _state = DiabotGlobalState.education;
-      _awaitingEducationQuestion = true;
-      return;
-    }
-
-    final shortcut = _clarificationShortcuts[rawText.trim().toLowerCase()];
-    if (shortcut != null) {
-      _eventStack.add(EventInstance(
-        type: shortcut,
-        source: EventSource.quickReply,
-      ));
-      return;
-    }
-
     final bareNumber = _extractBareNumber(rawText);
     if (bareNumber != null) {
       _eventStack.add(EventInstance(
@@ -200,14 +203,18 @@ class ConversationOrchestrator {
       return;
     }
 
-    if (classifier == null) {
+    if (interpreter == null) {
       _eventStack.add(EventInstance(type: EventType.unknown));
       return;
     }
 
-    final extraction = await classifier.classify(rawText);
-    if (extraction.events.isEmpty || extraction.confidence < 0.5) {
-      _eventStack.add(EventInstance(type: EventType.unknown));
+    final extraction = await interpreter.interpret(rawText);
+    if (extraction.events.isEmpty ||
+        extraction.confidence < SemanticInterpreter.minimumConfidence) {
+      _eventStack.add(EventInstance(
+        type: EventType.unknown,
+        data: {'_freeResponse': extraction.freeTextResponse},
+      ));
       return;
     }
 
@@ -219,6 +226,8 @@ class ConversationOrchestrator {
           ...entities,
           'raw_text': rawText,
           '_parserConfidence': extraction.confidence,
+          if (extraction.freeTextResponse != null)
+            '_freeResponse': extraction.freeTextResponse,
         },
         source: EventSource.semanticParser,
       ));
@@ -241,6 +250,7 @@ class ConversationOrchestrator {
     if (raw['insulin_type'] != null) out['insulinType'] = raw['insulin_type'];
     if (raw['dose'] != null) out['dose'] = raw['dose'];
     if (raw['symptom_type'] != null) out['symptomType'] = raw['symptom_type'];
+    if (raw['free_reply'] != null) out['_freeResponse'] = raw['free_reply'];
     const profileEntityKeys = {
       'profile_diabetes_type': 'diabetesType',
       'profile_weight_kg': 'weightKg',
@@ -285,11 +295,14 @@ class ConversationOrchestrator {
         '${_emergencyIntro(assessment.reason, assessment.usedTemporalContext)}\n\n${reply.text}',
         quickReplies: reply.quickReplies,
         numericInputHint: reply.numericInputHint,
+        guidedFieldKind: reply.guidedFieldKind,
+        guidedModuleId: reply.guidedModuleId,
       );
     }
 
     return _processStack();
   }
+
 
   /// Priority engine -> knowledge engine -> ask/store, recursing until the
   /// stack empties or a question needs to be asked. Never re-checks the
@@ -323,10 +336,12 @@ class ConversationOrchestrator {
         reason: 'parser could not produce a valid event',
       );
       _eventStack.removeAt(0);
-      _state = DiabotGlobalState.clarification;
-      return const OrchestratorReply(
-        'Não entendi bem. Sobre o que você quer falar?',
-        quickReplies: _clarificationQuickReplies,
+      _state = DiabotGlobalState.idle;
+      final freeResponse = active.data['_freeResponse'] as String?;
+      return OrchestratorReply(
+        freeResponse?.trim().isNotEmpty == true
+            ? freeResponse!.trim()
+            : 'Não consegui interpretar isso com segurança. Pode me contar de outra forma?',
       );
     }
 
@@ -336,9 +351,13 @@ class ConversationOrchestrator {
           active.data['_contextHandled'] != true) {
         _state = DiabotGlobalState.enrichingContext;
         _pendingFieldKey = '_contextOptIn';
-        return const OrchestratorReply(
+          return OrchestratorReply(
           'Quer registrar também quando, onde e o que estava acontecendo?',
-          quickReplies: ['Adicionar contexto', 'Continuar sem contexto'],
+            quickReplies: _withOtherOptions(
+              const ['Adicionar contexto', 'Continuar sem contexto'],
+            ),
+            guidedFieldKind: FieldKind.option,
+            guidedModuleId: 'event-context',
         );
       }
       _state = DiabotGlobalState.validating;
@@ -378,8 +397,10 @@ class ConversationOrchestrator {
     );
     return OrchestratorReply(
       field.question,
-      quickReplies: field.quickReplies,
+      quickReplies: _withOtherOptions(field.quickReplies),
       numericInputHint: field.numericInputHint,
+      guidedFieldKind: field.kind,
+      guidedModuleId: active.type.name,
     );
   }
 
@@ -392,6 +413,8 @@ class ConversationOrchestrator {
       '$message\n\n${next.text}',
       quickReplies: next.quickReplies,
       numericInputHint: next.numericInputHint,
+      guidedFieldKind: next.guidedFieldKind,
+      guidedModuleId: next.guidedModuleId,
     );
   }
 
@@ -406,6 +429,12 @@ class ConversationOrchestrator {
           ? SuggestionEngine.idleActions
           : SuggestionEngine.forEvent(completed),
     );
+  }
+
+  List<String> _withOtherOptions(List<String>? quickReplies) {
+    final options = quickReplies == null ? <String>[] : [...quickReplies];
+    if (!options.contains(_otherOptions)) options.add(_otherOptions);
+    return options;
   }
 
   Future<String> _resolveEducation(String question) async {
@@ -450,7 +479,13 @@ class ConversationOrchestrator {
   Future<OrchestratorReply> _resolveEmergency() async {
     final field = _currentEmergencyQuestion();
     if (field != null) {
-      return OrchestratorReply(field.question, quickReplies: field.quickReplies);
+      return OrchestratorReply(
+        field.question,
+        quickReplies: field.quickReplies,
+        numericInputHint: field.numericInputHint,
+        guidedFieldKind: field.kind,
+        guidedModuleId: 'emergency',
+      );
     }
 
     await storeGateway?.storeSystemEvent('emergency', {
@@ -509,8 +544,10 @@ class ConversationOrchestrator {
         _pendingFieldKey = field.key;
         return OrchestratorReply(
           field.question,
-          quickReplies: field.quickReplies,
+          quickReplies: _withOtherOptions(field.quickReplies),
           numericInputHint: field.numericInputHint,
+          guidedFieldKind: field.kind,
+          guidedModuleId: 'event-context',
         );
       }
       return null;
@@ -527,8 +564,10 @@ class ConversationOrchestrator {
       _pendingFieldKey = next.key;
       return OrchestratorReply(
         next.question,
-        quickReplies: next.quickReplies,
+        quickReplies: _withOtherOptions(next.quickReplies),
         numericInputHint: next.numericInputHint,
+        guidedFieldKind: next.kind,
+        guidedModuleId: 'event-context',
       );
     }
 

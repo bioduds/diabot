@@ -1,10 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
-import 'package:llama_cpp_dart/llama_cpp_dart.dart';
-
 import 'events.dart';
+import 'llm_runtime.dart';
+import 'semantic_diagnostics.dart';
 
 /// Structured result of parsing one piece of free-form user input (typed
 /// or transcribed) into zero or more events plus shared entities.
@@ -20,11 +19,13 @@ class NluExtraction {
   final List<EventType> events;
   final Map<String, dynamic> entities;
   final double confidence;
+  final String? freeTextResponse;
 
   const NluExtraction({
     this.events = const [],
     this.entities = const {},
     this.confidence = 0,
+    this.freeTextResponse,
   });
 
   factory NluExtraction.empty() => const NluExtraction();
@@ -34,10 +35,22 @@ class NluExtraction {
       'confidence: $confidence)';
 }
 
-/// Wraps the on-device Gemma model (via [LlamaParent]) to do ONLY
+/// Wraps the on-device Gemma model (via [LocalLLMRuntime]) to do ONLY
 /// multi-event extraction from a single user utterance. It never streams
 /// a conversational answer and never decides what DIABOT does next.
-class IntentClassifier {
+/// Converts free-form user language into structured event candidates.
+///
+/// The Kernel consumes only [NluExtraction], so this interface is the
+/// replaceable semantic boundary between an on-device LLM and the FSM.
+abstract interface class SemanticInterpreter {
+  static const minimumConfidence =
+      FsmContract.semanticInterpreterMinimumConfidence;
+
+  Future<NluExtraction> interpret(String userText);
+}
+
+/// On-device Gemma implementation of [SemanticInterpreter].
+class IntentClassifier implements SemanticInterpreter {
   static const _eventNames = {
     'glucose',
     'meal',
@@ -53,118 +66,102 @@ class IntentClassifier {
     'unknown',
   };
 
-  /// GBNF grammar mirroring the JSON schema in [_systemPrompt] exactly.
-  /// Required because the base (pretrained, non-instruction-tuned) 4B
-  /// checkpoint has no notion of "stop after answering" and will happily
-  /// keep rambling past the JSON if left unconstrained — grammar-
-  /// constrained decoding forces every generated token to stay inside this
-  /// exact shape and ends the moment it's complete.
-  static const grammar = r'''
-root ::= "{\"events\": [" events-list "], \"entities\": {\"glucose\": " num-or-null ", \"food\": " str-or-null ", \"carbs_grams\": " num-or-null ", \"duration\": " num-or-null ", \"intensity\": " str-or-null ", \"insulin_type\": " str-or-null ", \"dose\": " num-or-null ", \"symptom_type\": " str-or-null ", \"profile_diabetes_type\": " str-or-null ", \"profile_weight_kg\": " num-or-null ", \"profile_height_cm\": " num-or-null ", \"profile_age_years\": " num-or-null ", \"profile_sex\": " str-or-null ", \"profile_cgm\": " str-or-null ", \"profile_insulin_pump\": " str-or-null ", \"profile_insulin_carb_ratio\": " str-or-null ", \"profile_correction_factor\": " str-or-null ", \"profile_hypoglycemia_unawareness\": " bool-or-null ", \"profile_diagnosis_duration\": " str-or-null ", \"profile_knowledge_level\": " str-or-null ", \"profile_interaction_mode\": " str-or-null "}, \"confidence\": " conf-value "}"
-events-list ::= "\"" event-value "\"" (", \"" event-value "\"")*
-event-value ::= "glucose" | "meal" | "insulin" | "exercise" | "illness" | "ketones" | "medication" | "symptoms" | "cgm" | "profile" | "question" | "unknown"
-conf-value ::= "0" ("." [0-9] [0-9]?)? | "1" ("." "0")?
-str-or-null ::= "null" | "\"" [^"\n]* "\""
-num-or-null ::= "null" | "-"? [0-9]+ ("." [0-9]+)?
-bool-or-null ::= "null" | "true" | "false"
-''';
-
   static const _systemPrompt = '''
-Você é um extrator de eventos. Você NUNCA conversa, NUNCA explica e NUNCA responde ao usuário. Sua única função é ler uma frase em português (pode ser transcrição de voz, com pequenos erros, e pode conter mais de um evento) e devolver APENAS um objeto JSON, em uma única linha, sem nenhum texto antes ou depois, sem markdown, sem crases.
+Extraia eventos de uma frase em português. Responda APENAS um JSON, sem conversa ou markdown.
 
-Os eventos possíveis são exatamente estes (pode haver mais de um na mesma frase):
-- "glucose": o usuário informou um valor numérico de glicemia (mg/dL).
-- "meal": o usuário comeu ou vai comer algo.
-- "insulin": o usuário aplicou ou vai aplicar insulina.
-- "exercise": o usuário fez, faz ou vai fazer atividade física.
-- "illness": o usuário relata doença, infecção, febre ou mal-estar.
-- "ketones": o usuário relata ou mediu cetonas.
-- "medication": o usuário relata outro medicamento além de insulina.
-- "symptoms": sintomas de hipoglicemia ou hiperglicemia (tremor, suor frio, tontura, fraqueza, fome súbita, confusão, muita sede, muita vontade de urinar, visão turva, cansaço extremo).
-- "cgm": menção a sensor de glicemia contínua (CGM).
-- "profile": informação pessoal/cadastral (ex: tipo de diabetes, peso, uso de sensor, bomba, proporção insulina/carboidrato ou fator de correção).
-- "question": o usuário está fazendo uma pergunta e quer uma explicação.
-- "unknown": qualquer outra coisa, incluindo cumprimentos, ou frases que não se encaixam acima.
+Eventos: glucose (glicemia), meal (comeu, vai comer, fome ou alimentos), insulin, exercise, illness, ketones, medication, symptoms (tremor, suor frio, tontura, fraqueza, confusão, sede intensa), cgm, profile, question, unknown.
 
-Formato de saída (sempre as mesmas chaves; use null quando não souber; "events" é uma lista com 1 ou mais itens):
-{"events": [<um ou mais dos valores acima>], "entities": {"glucose": <número ou null>, "food": <string ou null>, "carbs_grams": <número ou null>, "duration": <número ou null>, "intensity": <string ou null>, "insulin_type": <string ou null>, "dose": <número ou null>, "symptom_type": <"hypo", "hyper" ou null>, "profile_diabetes_type": <string ou null>, "profile_weight_kg": <número ou null>, "profile_height_cm": <número ou null>, "profile_age_years": <número ou null>, "profile_sex": <string ou null>, "profile_cgm": <string ou null>, "profile_insulin_pump": <string ou null>, "profile_insulin_carb_ratio": <string ou null>, "profile_correction_factor": <string ou null>, "profile_hypoglycemia_unawareness": <true, false ou null>, "profile_diagnosis_duration": <string ou null>, "profile_knowledge_level": <string ou null>, "profile_interaction_mode": <string ou null>}, "confidence": <0.0 a 1.0>}
+Use os nomes exatos dos eventos. Em entities, emita somente dados encontrados: glucose, food, carbs_grams, duration, intensity, insulin_type, dose, symptom_type e campos profile_*. Se events for ["unknown"], inclua também free_reply com uma resposta curta, acolhedora e sem orientação médica. Não calcule, recomende nem invente dados.
 
-Exemplos:
-Entrada: comi uma pizza e tomei 8 unidades de fiasp
-Saída: {"events": ["meal", "insulin"], "entities": {"glucose": null, "food": "pizza", "carbs_grams": null, "duration": null, "intensity": null, "insulin_type": "Fiasp", "dose": 8}, "confidence": 0.9}
+Entrada: agora a fome apertou
+Saída: {"events": ["meal"], "entities": {}, "confidence": 0.9}
 
-Entrada: 117
-Saída: {"events": ["glucose"], "entities": {"glucose": 117, "food": null, "carbs_grams": null, "duration": null, "intensity": null, "insulin_type": null, "dose": null, "symptom_type": null, "profile_diabetes_type": null, "profile_weight_kg": null, "profile_height_cm": null, "profile_age_years": null, "profile_sex": null, "profile_cgm": null, "profile_insulin_pump": null, "profile_insulin_carb_ratio": null, "profile_correction_factor": null, "profile_hypoglycemia_unawareness": null, "profile_diagnosis_duration": null, "profile_knowledge_level": null, "profile_interaction_mode": null}, "confidence": 0.95}
-
-Entrada: minha glicemia está em 117, vou comer uma pizza e vou caminhar 40 minutos
-Saída: {"events": ["glucose", "meal", "exercise"], "entities": {"glucose": 117, "food": "pizza", "carbs_grams": null, "duration": 40, "intensity": null, "insulin_type": null, "dose": null, "symptom_type": null}, "confidence": 0.9}
+Entrada: comi pizza e tomei 8 unidades de fiasp
+Saída: {"events": ["meal", "insulin"], "entities": {"food": "pizza", "insulin_type": "fiasp", "dose": 8}, "confidence": 0.9}
 
 Entrada: estou tremendo e suando frio
-Saída: {"events": ["symptoms"], "entities": {"glucose": null, "food": null, "carbs_grams": null, "duration": null, "intensity": null, "insulin_type": null, "dose": null, "symptom_type": "hypo"}, "confidence": 0.9}
+Saída: {"events": ["symptoms"], "entities": {"symptom_type": "hypo"}, "confidence": 0.9}
 
-Entrada: sai para correr
-Saída: {"events": ["exercise"], "entities": {"glucose": null, "food": null, "carbs_grams": null, "duration": null, "intensity": null, "insulin_type": null, "dose": null, "symptom_type": null}, "confidence": 0.9}
-
-Entrada: tomei 6 unidades de glargina
-Saída: {"events": ["insulin"], "entities": {"glucose": null, "food": null, "carbs_grams": null, "duration": null, "intensity": null, "insulin_type": "glargina", "dose": 6, "symptom_type": null}, "confidence": 0.9}
-
-Entrada: estou com fome
-Saída: {"events": ["meal"], "entities": {"glucose": null, "food": null, "carbs_grams": null, "duration": null, "intensity": null, "insulin_type": null, "dose": null, "symptom_type": null}, "confidence": 0.8}
-
-Entrada: por que a insulina baixa a glicemia?
-Saída: {"events": ["question"], "entities": {"glucose": null, "food": null, "carbs_grams": null, "duration": null, "intensity": null, "insulin_type": null, "dose": null, "symptom_type": null}, "confidence": 0.85}
-
-Entrada: oi, bom dia
-Saída: {"events": ["unknown"], "entities": {"glucose": null, "food": null, "carbs_grams": null, "duration": null, "intensity": null, "insulin_type": null, "dose": null, "symptom_type": null, "profile_diabetes_type": null, "profile_weight_kg": null, "profile_height_cm": null, "profile_age_years": null, "profile_sex": null, "profile_cgm": null, "profile_insulin_pump": null, "profile_insulin_carb_ratio": null, "profile_correction_factor": null, "profile_hypoglycemia_unawareness": null, "profile_diagnosis_duration": null, "profile_knowledge_level": null, "profile_interaction_mode": null}, "confidence": 0.9}
+Entrada: quero conversar sobre meu dia
+Saída: {"events": ["unknown"], "entities": {"free_reply": "Claro. Me conte o que aconteceu hoje."}, "confidence": 0.8}
 ''';
 
-  final LlamaParent llamaParent;
+  final LocalLLMRuntime llmRuntime;
+  final SemanticDiagnostics? diagnostics;
+  bool _isInterpreting = false;
 
-  IntentClassifier(this.llamaParent);
+  IntentClassifier(this.llmRuntime, {this.diagnostics});
 
-  /// Classifies [userText]. Returns [NluExtraction.empty] on any failure
+  /// Interprets [userText]. Returns [NluExtraction.empty] on any failure
   /// (model not ready, timeout, malformed JSON) so the orchestrator always
   /// has a safe fallback instead of crashing or showing raw model output.
-  Future<NluExtraction> classify(String userText) async {
-    if (llamaParent.status != LlamaStatus.ready) return NluExtraction.empty();
+  @override
+  Future<NluExtraction> interpret(String userText) async {
+    if (llmRuntime.status != LLMStatus.ready || _isInterpreting) {
+      _logRuntimeOutcome(
+        'skipped',
+        runtimeStatus: llmRuntime.status,
+        alreadyInterpreting: _isInterpreting,
+      );
+      diagnostics?.record(SemanticDebugSnapshot(
+        stage: 'skipped',
+        runtimeStatus: llmRuntime.status,
+        timestamp: DateTime.now(),
+        failure: _isInterpreting
+            ? 'Há outra interpretação em andamento.'
+            : 'O modelo local não está pronto para gerar.',
+      ));
+      return NluExtraction.empty();
+    }
 
-    // Raw few-shot completion instead of a chat template: the base
-    // (pretrained-only) checkpoint was never trained on Gemma's
-    // <start_of_turn> role markup, so wrapping the prompt in it just adds
-    // out-of-distribution noise. Plain "Entrada:/Saída:" continuation
-    // matches the exact pattern already shown in [_systemPrompt].
+    // The local runtime applies Gemma's turn template before generation. Keeping
+    // the examples in the user turn gives the instruction-tuned model a
+    // compact, consistent extraction task.
     final sanitized = userText.replaceAll('\n', ' ').trim();
     final promptText = '$_systemPrompt\nEntrada: $sanitized\nSaída: ';
 
-    final buffer = StringBuffer();
-    final completer = Completer<void>();
-
-    final tokenSub = llamaParent.stream.listen((token) {
-      buffer.write(token);
-    });
-    final compSub = llamaParent.completions.listen((event) {
-      if (!completer.isCompleted) completer.complete();
-    });
-
+    _isInterpreting = true;
+    var completed = false;
+    var timedOut = false;
+    String? failureType;
+    var response = '';
     try {
-      await llamaParent.sendPrompt(promptText);
-      await completer.future.timeout(const Duration(seconds: 30),
-          onTimeout: () {});
-    } catch (_) {
-      // Fall through; buffer may be partially filled or empty, handled by
-      // _parse below.
+      response = await llmRuntime.generate(promptText).timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          timedOut = true;
+          return '';
+        },
+      );
+      completed = !timedOut;
+    } catch (error) {
+      failureType = error.runtimeType.toString();
+      // Fall through; response may be empty, handled by _parse below.
     } finally {
-      await tokenSub.cancel();
-      await compSub.cancel();
+      _isInterpreting = false;
     }
 
-    if (kDebugMode) {
-      // ignore: avoid_print
-      print('[IntentClassifier] raw output for "$sanitized": '
-          '${buffer.toString()}');
-    }
-
-    return _parse(buffer.toString());
+    _logRuntimeOutcome(
+      'completed',
+      runtimeStatus: llmRuntime.status,
+      completed: completed,
+      timedOut: timedOut,
+      failureType: failureType,
+      characterCount: response.length,
+    );
+    final extraction = _parse(response);
+    diagnostics?.record(SemanticDebugSnapshot(
+      stage: 'completed',
+      runtimeStatus: llmRuntime.status,
+      timestamp: DateTime.now(),
+      outputCharacters: response.length,
+      hasJson: response.contains('{') && response.contains('}'),
+      eventNames: extraction.events.map((event) => event.name).toList(),
+      confidence: extraction.confidence == 0 ? null : extraction.confidence,
+      timedOut: timedOut,
+      failure: failureType,
+    ));
+    return extraction;
   }
 
   NluExtraction _parse(String raw) {
@@ -175,7 +172,10 @@ Saída: {"events": ["unknown"], "entities": {"glucose": null, "food": null, "car
     // robust regardless of internal nesting.
     final start = raw.indexOf('{');
     final end = raw.lastIndexOf('}');
-    if (start == -1 || end == -1 || end <= start) return NluExtraction.empty();
+    if (start == -1 || end == -1 || end <= start) {
+      _logResponseShape(raw.length, hasJson: false);
+      return NluExtraction.empty();
+    }
     try {
       final json =
           jsonDecode(raw.substring(start, end + 1)) as Map<String, dynamic>;
@@ -188,21 +188,68 @@ Saída: {"events": ["unknown"], "entities": {"glucose": null, "food": null, "car
         final type = eventTypeFromString(name);
         if (type != null && !events.contains(type)) events.add(type);
       }
-      if (events.isEmpty) return NluExtraction.empty();
+      if (events.isEmpty) {
+        _logResponseShape(raw.length, hasJson: true, eventCount: 0);
+        return NluExtraction.empty();
+      }
 
       final confidence = (json['confidence'] as num?)?.toDouble() ?? 0.0;
 
       final rawEntities =
           (json['entities'] as Map<String, dynamic>?) ?? const {};
+        final freeTextResponse = (rawEntities['free_reply'] as String?)?.trim();
       final entities = <String, dynamic>{};
       for (final entry in rawEntities.entries) {
         if (entry.value != null) entities[entry.key] = entry.value;
       }
 
+      _logResponseShape(raw.length,
+          hasJson: true, eventCount: events.length, confidence: confidence);
       return NluExtraction(
-          events: events, entities: entities, confidence: confidence);
+        events: events,
+        entities: entities,
+        confidence: confidence,
+        freeTextResponse:
+          freeTextResponse == null || freeTextResponse.isEmpty
+            ? null
+            : freeTextResponse,
+        );
     } catch (_) {
+      _logResponseShape(raw.length, hasJson: true, parseFailed: true);
       return NluExtraction.empty();
     }
+  }
+
+  void _logResponseShape(
+    int characterCount, {
+    required bool hasJson,
+    int? eventCount,
+    double? confidence,
+    bool parseFailed = false,
+  }) {
+    // ignore: avoid_print
+    print(
+      'DIABOT_NLU Semantic response: chars=$characterCount json=$hasJson '
+      'events=${eventCount ?? '-'} confidence=${confidence ?? '-'} '
+      'parseFailed=$parseFailed',
+    );
+  }
+
+  void _logRuntimeOutcome(
+    String stage, {
+    required LLMStatus runtimeStatus,
+    bool alreadyInterpreting = false,
+    bool? completed,
+    bool? timedOut,
+    String? failureType,
+    int? characterCount,
+  }) {
+    // ignore: avoid_print
+    print(
+      'DIABOT_NLU Semantic runtime: stage=$stage status=$runtimeStatus '
+      'busy=$alreadyInterpreting completed=${completed ?? '-'} '
+      'timedOut=${timedOut ?? '-'} failure=${failureType ?? '-'} '
+      'chars=${characterCount ?? '-'}',
+    );
   }
 }
