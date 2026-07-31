@@ -525,6 +525,21 @@ final Map<EventType, List<FieldSpec>> eventDefinitions = {
       quickReplies: ['Sim', 'Não'],
       priority: 1,
     ),
+    FieldSpec(
+      key: 'measurementContext',
+      question: 'Essa medição foi em jejum, depois de comer, ou aleatória?',
+      kind: FieldKind.option,
+      quickReplies: ['Jejum', 'Pós-refeição', 'Aleatória'],
+      optionValues: {
+        'jejum': 'jejum',
+        'pós-refeição': 'pos-refeicao',
+        'pos-refeicao': 'pos-refeicao',
+        'pós refeição': 'pos-refeicao',
+        'aleatóri': 'aleatoria',
+        'aleatori': 'aleatoria',
+      },
+      priority: 2,
+    ),
   ],
   EventType.insulin: const [
     FieldSpec(
@@ -533,6 +548,38 @@ final Map<EventType, List<FieldSpec>> eventDefinitions = {
       kind: FieldKind.number,
       numericInputHint: 'Unidades de insulina',
       priority: 0,
+    ),
+    FieldSpec(
+      key: 'insulinType',
+      question: 'Qual tipo de insulina você aplicou?',
+      kind: FieldKind.option,
+      quickReplies: ['Rápida/Ultrarrápida', 'Basal/Lenta', 'Pré-misturada'],
+      optionValues: {
+        'rápida': 'rapida',
+        'rapida': 'rapida',
+        'ultrarrápida': 'rapida',
+        'ultrarrapida': 'rapida',
+        'basal': 'basal',
+        'lenta': 'basal',
+        'pré-mistura': 'pre-misturada',
+        'pre-mistura': 'pre-misturada',
+      },
+      priority: 1,
+    ),
+    FieldSpec(
+      key: 'doseContext',
+      question: 'Essa dose foi para corrigir a glicemia, cobrir uma refeição, ou basal/rotina?',
+      kind: FieldKind.option,
+      quickReplies: ['Correção', 'Refeição', 'Basal/rotina'],
+      optionValues: {
+        'correç': 'correcao',
+        'correc': 'correcao',
+        'refeiç': 'refeicao',
+        'refeic': 'refeicao',
+        'basal': 'basal-rotina',
+        'rotina': 'basal-rotina',
+      },
+      priority: 2,
     ),
   ],
   EventType.meal: const [
@@ -623,12 +670,37 @@ final Map<EventType, List<FieldSpec>> eventDefinitions = {
       },
       priority: 0,
     ),
+    FieldSpec(
+      key: 'duration',
+      question: 'Quantos minutos durou o exercício, aproximadamente?',
+      kind: FieldKind.number,
+      numericInputHint: 'Duração (minutos)',
+      priority: 1,
+    ),
+    FieldSpec(
+      key: 'activityType',
+      question: 'Qual foi a atividade (ex: caminhada, corrida, musculação)?',
+      kind: FieldKind.freeText,
+      priority: 2,
+    ),
   ],
   EventType.illness: const [
     FieldSpec(
       key: 'illnessType',
       question: 'O que você está sentindo ou qual condição está enfrentando?',
       kind: FieldKind.freeText,
+    ),
+    FieldSpec(
+      key: 'severity',
+      question: 'Como você classificaria a intensidade: leve, moderada, ou grave?',
+      kind: FieldKind.option,
+      quickReplies: ['Leve', 'Moderada', 'Grave'],
+      optionValues: {
+        'leve': 'leve',
+        'moderad': 'moderada',
+        'grave': 'grave',
+      },
+      priority: 1,
     ),
   ],
   EventType.ketones: const [
@@ -644,12 +716,36 @@ final Map<EventType, List<FieldSpec>> eventDefinitions = {
       numericInputHint: 'Glicemia atual (mg/dL)',
       priority: 1,
     ),
+    FieldSpec(
+      key: 'measurementMethod',
+      question: 'Como foi feita a medição: urina ou sangue?',
+      kind: FieldKind.option,
+      quickReplies: ['Urina', 'Sangue'],
+      optionValues: {
+        'urina': 'urina',
+        'sangue': 'sangue',
+      },
+      priority: 2,
+    ),
   ],
   EventType.medication: const [
     FieldSpec(
       key: 'medicationName',
       question: 'Qual medicamento você tomou ou quer registrar?',
       kind: FieldKind.freeText,
+    ),
+    FieldSpec(
+      key: 'dose',
+      question: 'Qual foi a dose ou quantidade?',
+      kind: FieldKind.number,
+      numericInputHint: 'Dose/quantidade',
+      priority: 1,
+    ),
+    FieldSpec(
+      key: 'reason',
+      question: 'Para que você tomou esse medicamento?',
+      kind: FieldKind.freeText,
+      priority: 2,
     ),
   ],
   EventType.symptoms: const [
@@ -680,6 +776,18 @@ final Map<EventType, List<FieldSpec>> eventDefinitions = {
       quickReplies: ['Sim', 'Não'],
       dependsOn: MapEntry('symptomType', 'hypo'),
       priority: 2,
+    ),
+    FieldSpec(
+      key: 'severity',
+      question: 'Como você classificaria a intensidade: leve, moderada, ou intensa?',
+      kind: FieldKind.option,
+      quickReplies: ['Leve', 'Moderada', 'Intensa'],
+      optionValues: {
+        'leve': 'leve',
+        'moderad': 'moderada',
+        'intens': 'intensa',
+      },
+      priority: 3,
     ),
   ],
   // cgm, profile, question and unknown intentionally have no required
@@ -894,11 +1002,11 @@ class EmergencyEngine {
     String? symptomType;
     for (final event in stack) {
       if (event.type == EventType.glucose && event.data['value'] != null) {
-        glucose ??= (event.data['value'] as num).toDouble();
+        glucose ??= asDouble(event.data['value']);
       }
       if (event.type == EventType.symptoms) {
         if (event.data['value'] != null) {
-          glucose ??= (event.data['value'] as num).toDouble();
+          glucose ??= asDouble(event.data['value']);
         }
         if (event.data['symptomType'] != null) {
           symptomType ??= event.data['symptomType'] as String;
@@ -1020,8 +1128,12 @@ const List<FieldSpec> emergencyProtocolFields = [
   ),
 ];
 
-double? asDouble(dynamic value) =>
-    value == null ? null : (value as num).toDouble();
+double? asDouble(dynamic value) {
+  if (value == null) return null;
+  if (value is num) return value.toDouble();
+  if (value is String) return double.tryParse(value.replaceAll(',', '.'));
+  return null;
+}
 
 String formatNumber(num value) => value == value.roundToDouble()
     ? value.toStringAsFixed(0)

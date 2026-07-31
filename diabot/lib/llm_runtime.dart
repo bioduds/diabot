@@ -51,14 +51,19 @@ class LocalLLMRuntime {
     return _generate(Message.text(text: prompt, isUser: true));
   }
 
-  /// Runs one isolated completion where [audioBytes] (a WAV file, 16kHz
+  /// Runs one isolated completion where [wavBytes] (a WAV file, 16kHz
   /// mono, <=30s per Gemma 4's native audio input limit) is the spoken
   /// content and [instructionText] is the surrounding prompt/instructions.
   /// Gemma 4 is multimodal and extracts meaning from audio directly, so
   /// callers no longer need a separate speech-to-text pass for this path.
-  Future<String> generateWithAudio(String instructionText, Uint8List audioBytes) {
+  ///
+  /// The full .wav file (RIFF header included) is passed as-is: the native
+  /// engine rejects the call almost instantly (`_Exception` within ~100ms)
+  /// when handed headerless raw PCM instead, so it evidently relies on the
+  /// container to determine sample rate/format itself.
+  Future<String> generateWithAudio(String instructionText, Uint8List wavBytes) {
     return _generate(
-      Message.withAudio(text: instructionText, audioBytes: audioBytes, isUser: true),
+      Message.withAudio(text: instructionText, audioBytes: wavBytes, isUser: true),
       enableAudioModality: true,
     );
   }
@@ -80,7 +85,12 @@ class LocalLLMRuntime {
       _status = LLMStatus.ready;
       return response;
     } catch (_) {
-      _status = LLMStatus.error;
+      // Each call opens its own session (see class doc), so one failed turn
+      // doesn't taint the model — recover to ready instead of permanently
+      // gating every later call (`IntentClassifier.interpret` skips whenever
+      // status != ready, so leaving this as `error` would brick the
+      // assistant for the rest of the session after a single bad turn).
+      _status = LLMStatus.ready;
       rethrow;
     } finally {
       await session.close();

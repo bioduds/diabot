@@ -245,16 +245,16 @@ class ConversationOrchestrator {
   /// generic knowledge engine, not event-specific control flow.
   Map<String, dynamic> _normalizeEntities(Map<String, dynamic> raw) {
     final out = <String, dynamic>{};
-    if (raw['glucose'] != null) out['value'] = raw['glucose'];
+    if (raw['glucose'] != null) out['value'] = _asNum(raw['glucose']);
     if (raw['food'] != null) out['food'] = raw['food'];
     if (raw['carbs_grams'] != null) {
-      out['carbsGrams'] = raw['carbs_grams'];
+      out['carbsGrams'] = _asNum(raw['carbs_grams']);
       out['carbsKnown'] = true;
     }
-    if (raw['duration'] != null) out['duration'] = raw['duration'];
+    if (raw['duration'] != null) out['duration'] = _asNum(raw['duration']);
     if (raw['intensity'] != null) out['intensity'] = raw['intensity'];
     if (raw['insulin_type'] != null) out['insulinType'] = raw['insulin_type'];
-    if (raw['dose'] != null) out['dose'] = raw['dose'];
+    if (raw['dose'] != null) out['dose'] = _asNum(raw['dose']);
     if (raw['symptom_type'] != null) out['symptomType'] = raw['symptom_type'];
     if (raw['free_reply'] != null) out['_freeResponse'] = raw['free_reply'];
     const profileEntityKeys = {
@@ -276,6 +276,16 @@ class ConversationOrchestrator {
       if (raw[entry.key] != null) out[entry.value] = raw[entry.key];
     }
     return out;
+  }
+
+  // The on-device LLM's JSON can emit numeric entities as quoted strings;
+  // coerce here so every numeric field is a real `num` from the moment it
+  // enters `event.data`, regardless of origin (parser vs. guided input).
+  num? _asNum(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return value;
+    if (value is String) return num.tryParse(value.replaceAll(',', '.'));
+    return null;
   }
 
   /// The FSM's central loop: emergency gate (checked once per new turn,

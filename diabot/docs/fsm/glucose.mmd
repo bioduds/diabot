@@ -1,0 +1,15 @@
+%% fsm-contract: {"eventType":"glucose","askedFields":["value","usedInsulin","measurementContext"],"path":["value?","usedInsulin","measurementContext","optional-context","stored"],"bareNumericShortcut":true,"globalStateChange":false,"lifecycleChange":false,"emergencyImpact":true,"priorityImpact":false,"medicalReasoning":false}
+%% Same shape as meal.mmd's fsm-contract; not yet enforced by test/fsm_mermaid_contract_test.dart.
+flowchart TD
+  INPUT[Glucose event from user, parser, or numeric shortcut] --> BARE{Bare number typed?}
+  BARE -->|yes| VALUE_DIRECT[Store value directly, skip parsing]
+  BARE -->|no| VALUE[Ask/record glucose value]
+  VALUE --> INSULIN_CHECK[Ask if fast insulin used in last 4h]
+  INSULIN_CHECK --> MEASURE_CONTEXT[Ask if measurement was fasting, post-meal, or random]
+  VALUE_DIRECT --> STORE
+  MEASURE_CONTEXT --> CONTEXT[Offer optional context]
+  CONTEXT --> STORE[Store glucose event]
+  STORE --> SIGNAL[Feeds glucose + recentInsulin signals to EmergencyEngine]
+
+  NOTE[Generic missing-field collection only: no new DiabotGlobalState, EventStatus, priority rule, or medical recommendation]
+  BACKLOG[Roadmap backlog, not implemented: history/trend charts, statistics, Time in Range, GMI, glycemic variability. These are read-only analytics over stored events, not new event fields — they belong in a future reporting view like profile_view.mmd, not this contract. Manual CGM integration already exists as the separate stub `cgm` EventType.]

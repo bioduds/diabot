@@ -196,6 +196,8 @@ enum _ChatMenuAction {
 class _ChatPageState extends State<ChatPage> {
   final TextEditingController _controller = TextEditingController();
   final List<Message> _messages = [];
+  final ScrollController _scrollController = ScrollController();
+  int _lastScrolledMessageCount = 0;
   bool _isLoading = false;
   _InteractionMode _interactionMode = _InteractionMode.free;
   _GuidedPrompt? _guidedPrompt;
@@ -667,7 +669,21 @@ class _ChatPageState extends State<ChatPage> {
     _recordingTimer?.cancel();
     _audioRecorder.dispose();
     _audioPlayer.dispose();
+    _scrollController.dispose();
     super.dispose();
+  }
+
+  // Scrolls to the newest message once its frame is laid out; checked on
+  // every build so it fires regardless of which code path appended it.
+  void _scrollToBottomIfNewMessage() {
+    if (_messages.length == _lastScrolledMessageCount) return;
+    _lastScrolledMessageCount = _messages.length;
+    if (!_scrollController.hasClients) return;
+    _scrollController.animateTo(
+      _scrollController.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+    );
   }
 
   /// Plays back (or stops) the WAV recorded for a voice message, so the
@@ -831,6 +847,8 @@ class _ChatPageState extends State<ChatPage> {
   @override
   Widget build(BuildContext context) {
     final modelReady = _llmRuntime != null;
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _scrollToBottomIfNewMessage());
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
@@ -997,6 +1015,7 @@ class _ChatPageState extends State<ChatPage> {
               children: [
                 Expanded(
                   child: ListView.builder(
+                    controller: _scrollController,
                     padding: const EdgeInsets.all(16),
                     itemCount: _messages.length,
                     itemBuilder: (context, index) {
@@ -1325,7 +1344,12 @@ class _GuidedInputPanelState extends State<_GuidedInputPanel> {
   @override
   Widget build(BuildContext context) {
     final prompt = widget.prompt;
-    final usesOptions = prompt.options.isNotEmpty;
+    // `options` always contains at least "Outras opções" (see
+    // `_withOtherOptions` in orchestrator.dart), so its mere presence can't
+    // decide the control: only yesNo/option fields carry real choices.
+    final usesOptions = (prompt.kind == FieldKind.yesNo ||
+            prompt.kind == FieldKind.option) &&
+        prompt.options.isNotEmpty;
     final numeric = prompt.kind == FieldKind.number;
     final module = GuidedModuleCatalog.byId(prompt.moduleId);
     return Padding(
@@ -1365,7 +1389,7 @@ class _GuidedInputPanelState extends State<_GuidedInputPanel> {
                   ),
               ],
             )
-          else
+          else ...[
             Row(
               children: [
                 Expanded(
@@ -1393,6 +1417,21 @@ class _GuidedInputPanelState extends State<_GuidedInputPanel> {
                 ),
               ],
             ),
+            if (prompt.options.isNotEmpty)
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  for (final option in prompt.options)
+                    TextButton(
+                      onPressed: widget.isLoading
+                          ? null
+                          : () => widget.onSubmit(option),
+                      child: Text(option),
+                    ),
+                ],
+              ),
+          ],
         ],
       ),
     );

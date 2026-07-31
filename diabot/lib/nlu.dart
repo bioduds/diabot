@@ -143,7 +143,8 @@ Saída: {"events": ["unknown"], "entities": {"free_reply": "Claro. Me conte o qu
     final sanitized = userText.replaceAll('\n', ' ').trim();
     final promptText = audioBytes == null
         ? '$_systemPrompt\nEntrada: $sanitized\nSaída: '
-        : '$_systemPrompt\nEntrada: (mensagem de voz a seguir)\nSaída: ';
+        : '$_systemPrompt\nEntrada: (ouça a fala no áudio a seguir e '
+            'extraia dela exatamente como nos exemplos acima)\nSaída: ';
 
     _isInterpreting = true;
     var completed = false;
@@ -154,8 +155,11 @@ Saída: {"events": ["unknown"], "entities": {"free_reply": "Claro. Me conte o qu
       final generation = audioBytes == null
           ? llmRuntime.generate(promptText)
           : llmRuntime.generateWithAudio(promptText, audioBytes);
+      // 4B-parameter prefill alone measured 24-28s on-device (Galaxy A56),
+      // so 30s was cutting off otherwise-successful generations; the
+      // audio path also carries the encoder/adapter passes on top of that.
       response = await generation.timeout(
-        const Duration(seconds: 30),
+        const Duration(seconds: 75),
         onTimeout: () {
           timedOut = true;
           return '';

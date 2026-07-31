@@ -1,0 +1,11 @@
+%% fsm-contract: {"eventType":"medication","askedFields":["medicationName","dose","reason"],"path":["medicationName","dose","reason","optional-context","stored"],"globalStateChange":false,"lifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"medicalReasoning":false}
+%% Same shape as meal.mmd's fsm-contract; not yet enforced by test/fsm_mermaid_contract_test.dart.
+flowchart TD
+  INPUT[Medication event from user or parser] --> NAME[Ask which medication, free text]
+  NAME --> DOSE[Ask dose or quantity]
+  DOSE --> REASON[Ask reason for taking it, free text]
+  REASON --> CONTEXT[Offer optional context]
+  CONTEXT --> STORE[Store medication event]
+
+  NOTE[Generic missing-field collection only: no new DiabotGlobalState, EventStatus, priority rule, or medical recommendation]
+  BACKLOG[No further roadmap items requested yet.]

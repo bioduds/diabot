@@ -10,6 +10,9 @@
     "module.onboarding.title": "Perfil inicial",
     "module.emergency.title": "Atenção imediata",
     "module.eventContext.title": "Contexto do registro",
+    "module.profile.title": "Perfil",
+    "module.education.title": "Dúvida",
+    "module.cgm.title": "Sensor CGM",
     "guided.exit": "Sair",
     "guided.inputHint": "Digite sua resposta",
     "guided.submitTooltip": "Enviar resposta"

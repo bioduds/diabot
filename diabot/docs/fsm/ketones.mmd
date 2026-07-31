@@ -1,0 +1,11 @@
+%% fsm-contract: {"eventType":"ketones","askedFields":["ketoneResult","value","measurementMethod"],"path":["ketoneResult","value?","measurementMethod","optional-context","stored"],"globalStateChange":false,"lifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"medicalReasoning":false}
+%% Same shape as meal.mmd's fsm-contract; not yet enforced by test/fsm_mermaid_contract_test.dart.
+flowchart TD
+  INPUT[Ketones event from user or parser] --> RESULT[Ask ketone measurement result, free text]
+  RESULT --> VALUE[Ask current glucose value, if known]
+  VALUE --> METHOD[Ask measurement method: urina or sangue]
+  METHOD --> CONTEXT[Offer optional context]
+  CONTEXT --> STORE[Store ketones event]
+
+  NOTE[Generic missing-field collection only: no new DiabotGlobalState, EventStatus, priority rule, or medical recommendation]
+  BACKLOG[No further roadmap items requested yet.]

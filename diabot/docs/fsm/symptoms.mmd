@@ -1,0 +1,16 @@
+%% fsm-contract: {"eventType":"symptoms","askedFields":["symptomType","value","usedFastInsulin","severity"],"path":["symptomType","value?","usedFastInsulin-if-hypo","severity","optional-context","stored"],"globalStateChange":false,"lifecycleChange":false,"emergencyImpact":true,"priorityImpact":true,"medicalReasoning":false}
+%% Same shape as meal.mmd's fsm-contract; not yet enforced by test/fsm_mermaid_contract_test.dart.
+flowchart TD
+  INPUT[Symptom event from user or parser] --> TYPE[Ask symptom type: hipo or hiper]
+  TYPE --> VALUE[Ask current glucose value, if known]
+  VALUE --> HYPO_CHECK{Type is hipo?}
+  HYPO_CHECK -->|yes| FAST_INSULIN[Ask if fast insulin used in last 4h]
+  HYPO_CHECK -->|no| SKIP_INSULIN[Skip fast-insulin question]
+  FAST_INSULIN --> SEVERITY[Ask severity: leve, moderada, or intensa]
+  SKIP_INSULIN --> SEVERITY
+  SEVERITY --> CONTEXT[Offer optional context]
+  CONTEXT --> STORE[Store symptom event]
+  STORE --> SIGNAL[Feeds symptomType + glucose signals to EmergencyEngine]
+
+  NOTE[Symptoms are the highest-priority event type, but priority ordering alone does not add a new DiabotGlobalState, EventStatus, or medical recommendation]
+  BACKLOG[Roadmap backlog, not implemented: correlation-with-glucose analytics (read-only reporting, not a new FSM field). General/non-hypo-hyper symptoms already have their own separate `illness` EventType with free-text detail.]

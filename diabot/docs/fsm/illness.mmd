@@ -1,0 +1,10 @@
+%% fsm-contract: {"eventType":"illness","askedFields":["illnessType","severity"],"path":["illnessType","severity","optional-context","stored"],"globalStateChange":false,"lifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"medicalReasoning":false}
+%% Same shape as meal.mmd's fsm-contract; not yet enforced by test/fsm_mermaid_contract_test.dart.
+flowchart TD
+  INPUT[Illness event from user or parser] --> TYPE[Ask what the user is feeling, free text]
+  TYPE --> SEVERITY[Ask severity: leve, moderada, or grave]
+  SEVERITY --> CONTEXT[Offer optional context]
+  CONTEXT --> STORE[Store illness event]
+
+  NOTE[Generic missing-field collection only: no new DiabotGlobalState, EventStatus, priority rule, or medical recommendation]
+  BACKLOG[General/non-hypo-hyper symptoms live here rather than in the `symptoms` EventType, which is reserved for hypo/hyper glucose symptoms. No further roadmap items requested yet.]

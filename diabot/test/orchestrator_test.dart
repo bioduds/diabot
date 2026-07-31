@@ -1,5 +1,8 @@
+import 'dart:typed_data';
+
 import 'package:diabot/events.dart';
 import 'package:diabot/initialization.dart';
+import 'package:diabot/module_catalog.dart';
 import 'package:diabot/nlu.dart';
 import 'package:diabot/orchestrator.dart';
 import 'package:diabot/time_engine.dart';
@@ -58,7 +61,8 @@ class _SemanticInterpreter implements SemanticInterpreter {
   final NluExtraction extraction;
 
   @override
-  Future<NluExtraction> interpret(String userText) async => extraction;
+  Future<NluExtraction> interpret(String userText, {Uint8List? audioBytes}) async =>
+      extraction;
 }
 
 const _mealInterpreter = _SemanticInterpreter(NluExtraction(
@@ -340,5 +344,57 @@ void main() {
     );
 
     expect(answer.text, contains('Resposta para: O que são cetonas?'));
+  });
+
+  group('every guided module resolves a header and the right input control',
+      () {
+    // Regression coverage for a bug where every missing-field prompt showed
+    // only an "Outras opções" button, hiding the text/number input, because
+    // the panel decided its control by `quickReplies.isNotEmpty` instead of
+    // `FieldKind` — `_withOtherOptions` always adds that one entry, so the
+    // list is never actually empty. See main.dart's `_GuidedInputPanel`.
+    for (final type in const [
+      EventType.glucose,
+      EventType.insulin,
+      EventType.meal,
+      EventType.exercise,
+      EventType.illness,
+      EventType.ketones,
+      EventType.medication,
+      EventType.symptoms,
+    ]) {
+      test('${type.name} module has a resolvable header and a real control',
+          () async {
+        final orchestrator = ConversationOrchestrator();
+        final interpreter = _SemanticInterpreter(
+          NluExtraction(events: [type], confidence: 0.9),
+        );
+
+        final reply = await orchestrator.respond('free input', interpreter);
+
+        expect(reply.guidedModuleId, type.name);
+        expect(
+          () => GuidedModuleCatalog.byId(reply.guidedModuleId!),
+          returnsNormally,
+        );
+
+        final firstField = eventDefinitions[type]!.first;
+        expect(reply.guidedFieldKind, firstField.kind);
+        if (firstField.kind == FieldKind.number ||
+            firstField.kind == FieldKind.freeText) {
+          // No real choices for this field: only the generic fallback.
+          expect(reply.quickReplies, ['Outras opções']);
+        } else {
+          // yesNo/option fields must carry real, selectable choices.
+          expect(reply.quickReplies!.length, greaterThan(1));
+        }
+      });
+    }
+
+    for (final id in const ['onboarding', 'emergency', 'event-context']) {
+      test('support module "$id" has a resolvable header', () {
+        expect(() => GuidedModuleCatalog.byId(id), returnsNormally);
+      });
+    }
   });
 }

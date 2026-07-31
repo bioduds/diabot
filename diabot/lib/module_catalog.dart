@@ -87,6 +87,21 @@ class GuidedModuleCatalog {
       titleKey: 'module.eventContext.title',
       icon: Icons.notes_outlined,
     ),
+    'profile': GuidedModuleDefinition(
+      id: 'profile',
+      titleKey: 'module.profile.title',
+      icon: Icons.person_outline,
+    ),
+    'education': GuidedModuleDefinition(
+      id: 'education',
+      titleKey: 'module.education.title',
+      icon: Icons.school_outlined,
+    ),
+    'cgm': GuidedModuleDefinition(
+      id: 'cgm',
+      titleKey: 'module.cgm.title',
+      icon: Icons.sensors_outlined,
+    ),
   };
 
   static GuidedModuleDefinition forEvent(EventType type) {
