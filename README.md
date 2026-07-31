@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="diabot/assets/images/diabot_logo_dark.png" alt="Diabot logo" width="220" />
+</p>
+
 # Diabot and GlycoGuide
 
 This repository contains two independent diabetes-support prototypes. They do not share an API, database, or runtime:
@@ -64,10 +68,6 @@ CSV import is the alternative: export glucose history from LibreView, then impor
 GlycoGuide stores local data in `data/cgm_assistant.db`.
 
 ## Diabot Flutter application
-
-<p align="center">
-  <img src="diabot/assets/images/diabot_logo_dark.png" alt="Diabot logo" width="220" />
-</p>
 
 Diabot is not a Flutter client for GlycoGuide. It is a separate Android-first prototype with its own authentication, local storage, and FSM kernel. It applies a single dark, violet-accented theme app-wide, and the same mark is reused as the Android launcher icon and as the small assistant avatar shown next to chat messages.
 
