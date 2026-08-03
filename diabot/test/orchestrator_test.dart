@@ -193,7 +193,8 @@ void main() {
     await orchestrator.respond('70 kg', null);
     await orchestrator.respond('Tipo 1', null);
     await orchestrator.respond('3 anos', null);
-    final completed = await orchestrator.respond('Fiasp', null);
+    await orchestrator.respond('Fiasp', null);
+    final completed = await orchestrator.respond('Não', null);
 
     expect(first.text, contains('peso atual'));
     expect(orchestrator.state, DiabAIGlobalState.idle);

@@ -17,12 +17,22 @@ class OrchestratorReply {
   final FieldKind? guidedFieldKind;
   final String? guidedModuleId;
 
+  /// Pre-selectable unit labels (e.g. ['kg', 'lb']) shown next to a
+  /// numeric guided question. Empty when the question has no units.
+  final List<String> unitOptions;
+
+  /// True only while the FSM is waiting for a LibreLinkUp password (see
+  /// docs/fsm/cgm.mmd): the UI must not echo the typed answer.
+  final bool obscureNextAnswer;
+
   const OrchestratorReply(
     this.text, {
     this.quickReplies,
     this.numericInputHint,
     this.guidedFieldKind,
     this.guidedModuleId,
+    this.unitOptions = const [],
+    this.obscureNextAnswer = false,
   });
 }
 
@@ -193,9 +203,14 @@ class ConversationOrchestrator {
     return OrchestratorReply(
       reply.text,
       quickReplies: reply.quickReplies,
+      numericInputHint:
+          _initializationModule.isComplete ? null : reply.numericInputHint,
       guidedFieldKind:
-          _initializationModule.isComplete ? null : FieldKind.freeText,
-        guidedModuleId: _initializationModule.isComplete ? null : 'onboarding',
+          _initializationModule.isComplete ? null : reply.kind,
+      guidedModuleId: _initializationModule.isComplete ? null : 'onboarding',
+      unitOptions:
+          _initializationModule.isComplete ? const [] : reply.unitOptions,
+      obscureNextAnswer: reply.obscureNextAnswer,
     );
   }
 

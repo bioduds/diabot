@@ -61,6 +61,12 @@ The screenshot was captured during device validation and anonymized before inclu
 
 The Meal module is declared in [docs/fsm/meal.mmd](docs/fsm/meal.mmd). It uses the existing generic missing-field lifecycle to distinguish a meal already eaten from a planned meal, record food details and stated carbohydrate quantities, and offer generic context. It does not create a global state, change emergency or priority behavior, calculate insulin, or recommend a dose.
 
+## Glucose chart and CGM sync
+
+[lib/cgm_sync_engine.dart](lib/cgm_sync_engine.dart) is declared in [docs/fsm/cgm.mmd](docs/fsm/cgm.mmd). Once a LibreLinkUp account is connected, it polls the unofficial LibreLinkUp "graph" endpoint every `FsmContract.cgmSyncIntervalSeconds` while the app is in the foreground and stores any reading newer than the last sync as an ordinary `EventType.glucose` event with `EventSource.cgm`. It never touches the live conversation stack and never runs the Priority/Emergency engines directly.
+
+[lib/glucose_chart.dart](lib/glucose_chart.dart) is a read-only AGP-style view over that same local event log (manual entries and CGM auto-sync alike), reached from the profile view. It plots a selectable rolling window (8h–7d) with in-range shading, per-bucket averages, and a template-based (non-LLM) summary of the visible window. Pull-to-refresh and a once-a-minute timer both reload local data and re-fetch a live [lib/librelinkup.dart](lib/librelinkup.dart) snapshot (current reading, trend arrow, sensor, and patient-configured target range), merging the live reading into the plotted series so the current-reading number is always exactly the graph's last point. A settings screen reached through the app-bar gear icon holds the period and source (`manual`/`cgm`/`all`) filters, keeping the main chart on one screen without scrolling.
+
 The first-login [lib/initialization.dart](lib/initialization.dart) module is entered through the active `onboarding` global state after the external model is ready. It saves the local profile on completion and does not run again while that profile exists.
 
 ### Evolving the FSM

@@ -2,6 +2,8 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'events.dart';
+
 /// Locally-stored user profile captured during first-login onboarding.
 ///
 /// This data never leaves the device: it is persisted only via
@@ -19,6 +21,19 @@ class UserProfile {
   String tempoDiagnostico;
   String insulinas;
 
+  /// 'sim' / 'não', or empty if not yet asked. CGM = Continuous Glucose
+  /// Monitor, explained to the user in the onboarding question itself.
+  String cgmUsaServico;
+
+  /// Free label of the chosen device (e.g. "FreeStyle Libre 2 Plus",
+  /// "Dexcom", "Outro"). Never contains credentials.
+  String cgmProvider;
+
+  /// 'sim' / 'não'. LibreLinkUp credentials themselves are never stored
+  /// here or in SharedPreferences — see lib/librelinkup.dart's secure
+  /// storage wrapper.
+  String cgmLibreLinkUpConectado;
+
   UserProfile({
     this.idioma = '',
     this.nome = '',
@@ -28,6 +43,9 @@ class UserProfile {
     this.tipoDiabetes = '',
     this.tempoDiagnostico = '',
     this.insulinas = '',
+    this.cgmUsaServico = '',
+    this.cgmProvider = '',
+    this.cgmLibreLinkUpConectado = '',
   });
 
   factory UserProfile.fromJson(Map<String, dynamic> json) {
@@ -40,6 +58,10 @@ class UserProfile {
       tipoDiabetes: json['tipoDiabetes'] as String? ?? '',
       tempoDiagnostico: json['tempoDiagnostico'] as String? ?? '',
       insulinas: json['insulinas'] as String? ?? '',
+      cgmUsaServico: json['cgmUsaServico'] as String? ?? '',
+      cgmProvider: json['cgmProvider'] as String? ?? '',
+      cgmLibreLinkUpConectado:
+          json['cgmLibreLinkUpConectado'] as String? ?? '',
     );
   }
 
@@ -52,6 +74,9 @@ class UserProfile {
         'tipoDiabetes': tipoDiabetes,
         'tempoDiagnostico': tempoDiagnostico,
         'insulinas': insulinas,
+        'cgmUsaServico': cgmUsaServico,
+        'cgmProvider': cgmProvider,
+        'cgmLibreLinkUpConectado': cgmLibreLinkUpConectado,
       };
 
   /// Returns true when a profile has been fully captured and saved.
@@ -88,6 +113,9 @@ class UserProfile {
       parts.add('tempo de diagnóstico=$tempoDiagnostico');
     }
     if (insulinas.isNotEmpty) parts.add('insulinas utilizadas=$insulinas');
+    if (cgmUsaServico == 'sim' && cgmProvider.isNotEmpty) {
+      parts.add('usa CGM=$cgmProvider');
+    }
     if (parts.isEmpty) return '';
     return 'Dados do usuário (use para personalizar, nunca para prescrever): '
         '${parts.join('; ')}.';
@@ -136,6 +164,28 @@ String normalizeLanguageAnswer(String rawAnswer) {
   return 'pt';
 }
 
+/// Best-effort normalization of a free-typed weight answer ("70", "70 kg",
+/// "154 lb", "154 lbs") into a single canonical "NN kg" string, so every
+/// downstream reader (profile prompt summary, [ProfileEngine]'s `weightKg`
+/// extraction, profile view) can keep assuming kilograms.
+String normalizeWeightAnswer(String rawAnswer) {
+  final normalized = rawAnswer.trim().toLowerCase();
+  final numberMatch = RegExp(r'-?\d+(?:[.,]\d+)?').firstMatch(normalized);
+  if (numberMatch == null) return rawAnswer.trim();
+  final number = double.tryParse(numberMatch.group(0)!.replaceAll(',', '.'));
+  if (number == null) return rawAnswer.trim();
+
+  const poundWords = ['lb', 'lbs', 'libra', 'libras', 'pound', 'pounds'];
+  final isPounds = poundWords.any(normalized.contains);
+  final kg = isPounds ? number * 0.45359237 : number;
+
+  final rounded = (kg * 10).round() / 10;
+  final display = rounded == rounded.roundToDouble()
+      ? rounded.toInt().toString()
+      : rounded.toStringAsFixed(1);
+  return '$display kg';
+}
+
 /// One scripted onboarding question, mapping directly to a [UserProfile] field.
 class OnboardingQuestion {
   final String field;
@@ -143,11 +193,22 @@ class OnboardingQuestion {
   final String Function(UserProfile) getter;
   final void Function(UserProfile, String) setter;
 
+  /// Determines the keyboard/control the guided input panel shows.
+  final FieldKind kind;
+  final String? numericInputHint;
+
+  /// Pre-selectable unit labels (e.g. ['kg', 'lb']) shown as chips next to
+  /// a [FieldKind.number] question. Empty when the question has no units.
+  final List<String> unitOptions;
+
   const OnboardingQuestion({
     required this.field,
     required this.question,
     required this.getter,
     required this.setter,
+    this.kind = FieldKind.freeText,
+    this.numericInputHint,
+    this.unitOptions = const [],
   });
 }
 
@@ -173,9 +234,12 @@ final List<OnboardingQuestion> onboardingQuestions = [
   ),
   OnboardingQuestion(
     field: 'peso',
-    question: 'Qual é o seu peso atual (ex: 70 kg)?',
+    question: 'Qual é o seu peso atual?',
     getter: (p) => p.peso,
-    setter: (p, v) => p.peso = v,
+    setter: (p, v) => p.peso = normalizeWeightAnswer(v),
+    kind: FieldKind.number,
+    numericInputHint: 'Peso',
+    unitOptions: const ['kg', 'lb'],
   ),
   OnboardingQuestion(
     field: 'tipoDiabetes',

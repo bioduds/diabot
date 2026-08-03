@@ -15,7 +15,10 @@ import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_theme.dart';
+import 'cgm_sync_engine.dart';
 import 'events.dart';
+import 'glucose_chart.dart';
+import 'librelinkup.dart';
 import 'local_db.dart';
 import 'login_page.dart';
 import 'llm_runtime.dart';
@@ -176,6 +179,8 @@ class _GuidedPrompt {
     required this.question,
     this.options = const [],
     this.numericInputHint,
+    this.unitOptions = const [],
+    this.obscureInput = false,
   });
 
   final String moduleId;
@@ -183,6 +188,13 @@ class _GuidedPrompt {
   final String question;
   final List<String> options;
   final String? numericInputHint;
+
+  /// Pre-selectable unit labels (e.g. ['kg', 'lb']) shown next to a
+  /// numeric guided question. Empty when the question has no units.
+  final List<String> unitOptions;
+
+  /// True only for the LibreLinkUp password question (docs/fsm/cgm.mmd).
+  final bool obscureInput;
 }
 
 enum _ChatMenuAction {
@@ -226,6 +238,15 @@ class _ChatPageState extends State<ChatPage> {
     ),
   );
 
+  // Follows a linked LibreLinkUp account every 60s while the app is open
+  // and stores new readings as ordinary glucose events — see
+  // docs/fsm/cgm.mmd. A no-op (cheap secure-storage read) until onboarding
+  // connects an account.
+  final CgmSyncEngine _cgmSyncEngine = CgmSyncEngine(
+    credentialStore: LibreLinkUpCredentialStore(),
+    storeGateway: LocalDatabase.instance,
+  );
+
   // Voice input (mic button) state. Recording is captured as a 16kHz mono
   // WAV file (<=30s, Gemma 4's native audio input limit) and sent to the
   // on-device model directly — Gemma 4 is multimodal and extracts events
@@ -247,6 +268,7 @@ class _ChatPageState extends State<ChatPage> {
     _audioPlayer.onPlayerComplete.listen((_) {
       if (mounted) setState(() => _playingAudioPath = null);
     });
+    _cgmSyncEngine.start();
     _bootstrapAfterLogin();
   }
 
@@ -294,6 +316,8 @@ class _ChatPageState extends State<ChatPage> {
           question: onboardingReply.text,
           options: onboardingReply.quickReplies ?? const [],
           numericInputHint: onboardingReply.numericInputHint,
+          unitOptions: onboardingReply.unitOptions,
+          obscureInput: onboardingReply.obscureNextAnswer,
         );
         _interactionMode = _InteractionMode.guided;
       }
@@ -353,8 +377,12 @@ class _ChatPageState extends State<ChatPage> {
       return;
     }
 
+    // The LibreLinkUp password question is the one guided field whose
+    // typed answer must never be echoed back into the visible chat log.
+    final displayText =
+        _guidedPrompt?.obscureInput == true ? '••••••••' : prompt;
     setState(() {
-      _messages.add(Message('user', prompt, audioPath: audioPath));
+      _messages.add(Message('user', displayText, audioPath: audioPath));
       if (!fromGuided && forcedText == null) _controller.clear();
       _isLoading = true;
     });
@@ -392,10 +420,23 @@ class _ChatPageState extends State<ChatPage> {
               question: reply.text,
               options: reply.quickReplies ?? const [],
               numericInputHint: reply.numericInputHint,
+              unitOptions: reply.unitOptions,
+              obscureInput: reply.obscureNextAnswer,
             );
       _interactionMode =
           guidedKind == null ? _InteractionMode.free : _InteractionMode.guided;
       _isLoading = false;
+    });
+  }
+
+  /// Shows the deterministic glucose report handed back by
+  /// [GlucoseChartPage]'s "Pedir relatório de glicose a Nuno" button as a
+  /// normal chat turn \u2014 it's already computed real numbers, so it's
+  /// appended directly instead of round-tripping through the orchestrator.
+  void _receiveGlucoseReport(String report) {
+    setState(() {
+      _messages.add(Message('user', 'Pedi um relatório da minha glicemia.'));
+      _messages.add(Message('assistant', report));
     });
   }
 
@@ -681,6 +722,7 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    _cgmSyncEngine.stop();
     _llmRuntime?.dispose();
     _semanticDiagnostics.dispose();
     _rag.dispose();
@@ -927,6 +969,19 @@ class _ChatPageState extends State<ChatPage> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.show_chart_outlined),
+            onPressed: () async {
+              final report = await Navigator.of(context).push<String>(MaterialPageRoute(
+                builder: (_) => GlucoseChartPage(
+                  database: LocalDatabase.instance,
+                  cgmSyncEngine: _cgmSyncEngine,
+                ),
+              ));
+              if (report != null) _receiveGlucoseReport(report);
+            },
+            tooltip: 'Ver glicemia do dia',
+          ),
           IconButton(
             icon: const Icon(Icons.person_outline),
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(
@@ -1347,6 +1402,26 @@ class _GuidedInputPanel extends StatefulWidget {
 
 class _GuidedInputPanelState extends State<_GuidedInputPanel> {
   final _controller = TextEditingController();
+  String? _selectedUnit;
+
+  @override
+  void initState() {
+    super.initState();
+    _initSelectedUnit();
+  }
+
+  @override
+  void didUpdateWidget(_GuidedInputPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.prompt.question != widget.prompt.question) {
+      _initSelectedUnit();
+    }
+  }
+
+  void _initSelectedUnit() {
+    _selectedUnit =
+        widget.prompt.unitOptions.isNotEmpty ? widget.prompt.unitOptions.first : null;
+  }
 
   @override
   void dispose() {
@@ -1357,7 +1432,8 @@ class _GuidedInputPanelState extends State<_GuidedInputPanel> {
   void _submit() {
     final text = _controller.text.trim();
     if (text.isEmpty || widget.isLoading) return;
-    widget.onSubmit(text);
+    final value = _selectedUnit == null ? text : '$text $_selectedUnit';
+    widget.onSubmit(value);
   }
 
   @override
@@ -1409,11 +1485,29 @@ class _GuidedInputPanelState extends State<_GuidedInputPanel> {
               ],
             )
           else ...[
+            if (numeric && prompt.unitOptions.length > 1)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Wrap(
+                  spacing: 8,
+                  children: [
+                    for (final unit in prompt.unitOptions)
+                      ChoiceChip(
+                        label: Text(unit),
+                        selected: _selectedUnit == unit,
+                        onSelected: widget.isLoading
+                            ? null
+                            : (_) => setState(() => _selectedUnit = unit),
+                      ),
+                  ],
+                ),
+              ),
             Row(
               children: [
                 Expanded(
                   child: TextField(
                     controller: _controller,
+                    obscureText: prompt.obscureInput,
                     keyboardType: numeric
                         ? const TextInputType.numberWithOptions(decimal: true)
                         : TextInputType.text,
@@ -1422,8 +1516,8 @@ class _GuidedInputPanelState extends State<_GuidedInputPanel> {
                           UiText.current.get('guided.inputHint'),
                       border: const OutlineInputBorder(),
                     ),
-                    minLines: numeric ? 1 : 1,
-                    maxLines: numeric ? 1 : 3,
+                    minLines: 1,
+                    maxLines: numeric || prompt.obscureInput ? 1 : 3,
                     textInputAction: TextInputAction.send,
                     onSubmitted: (_) => _submit(),
                   ),

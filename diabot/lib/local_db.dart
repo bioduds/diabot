@@ -89,15 +89,20 @@ class LocalDatabase
   }
 
   /// Persists one orchestrated event (e.g. a logged meal or glucose
-  /// reading) with the current timestamp. [type] matches the FSM's event
-  /// type name (e.g. "meal", "exercise", "glucose", "insulin", "symptoms",
-  /// "emergency").
-  Future<void> logEvent(String type, Map<String, dynamic> fields) async {
+  /// reading). [type] matches the FSM's event type name (e.g. "meal",
+  /// "exercise", "glucose", "insulin", "symptoms", "emergency"). Defaults
+  /// [occurredAt] to now for interactively-collected events; CGM auto-sync
+  /// passes the sensor's own reading time so history/charts stay accurate.
+  Future<void> logEvent(
+    String type,
+    Map<String, dynamic> fields, {
+    DateTime? occurredAt,
+  }) async {
     final db = await _open();
     await db.insert('events', {
       'type': type,
       'payload': jsonEncode(fields),
-      'created_at': DateTime.now().toIso8601String(),
+      'created_at': (occurredAt ?? DateTime.now()).toIso8601String(),
     });
   }
 
@@ -112,7 +117,7 @@ class LocalDatabase
       '_event_id': event.id,
       '_source': event.source.name,
     };
-    await logEvent(event.type.name, fields);
+    await logEvent(event.type.name, fields, occurredAt: event.createdAt);
   }
 
   @override

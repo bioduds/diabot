@@ -1,0 +1,28 @@
+%% fsm-contract: {"appliesTo":"onboarding-profile-question-plus-background-sync","askedDuringOnboarding":true,"profileFields":["cgmUsaServico","cgmProvider","cgmLibreLinkUpConectado"],"directIntegrationProviders":["freestyle libre 2","freestyle libre 2 plus","freestyle libre 3"],"integrationService":"librelinkup","credentialStorage":"device-secure-storage-only","syncIntervalSeconds":60,"syncedReadingsEventType":"glucose","syncedReadingsSource":"cgm","globalStateChange":false,"lifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"medicalReasoning":false}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart TD
+  ONB[Onboarding: after fixed profile questions] --> ASK[Ask + explain CGM: "Você utiliza algum serviço de CGM - Monitor Contínuo de Glicose, sensor que mede a glicemia continuamente, sem picadas no dedo?"]
+  ASK --> USES{Usa CGM?}
+  USES -->|não| SAVE_NO[Save cgmUsaServico=não] --> CONTINUE[Continue onboarding / idle]
+  USES -->|sim| PROVIDER[Ask which CGM: FreeStyle Libre 2 / 2 Plus / 3, Dexcom, Outro]
+  PROVIDER --> ISLIBRE{Provider is a FreeStyle Libre model?}
+  ISLIBRE -->|não| SAVE_PROVIDER[Save cgmProvider, cgmLibreLinkUpConectado=não] --> CONTINUE
+  ISLIBRE -->|sim| EMAIL[Ask LibreLinkUp e-mail]
+  EMAIL --> PASSWORD[Ask LibreLinkUp password, input obscured on screen]
+  PASSWORD --> CONNECT[LibreLinkUpClient.connect: login, list patients]
+  CONNECT --> RESULT{Connected?}
+  RESULT -->|não| FAIL[Explain the error, offer retry or skip] --> SAVE_PROVIDER
+  RESULT -->|sim| STORE_CRED[Store token/email/region/patientId in device secure storage only, never in UserProfile/SharedPreferences]
+  STORE_CRED --> SAVE_OK[Save cgmProvider, cgmLibreLinkUpConectado=sim] --> CONTINUE
+
+  subgraph SYNC[CgmSyncEngine, runs only while app is open and connected]
+    TIMER[Every 60s] --> FETCH[Fetch LibreLinkUp graph data for linked patient]
+    FETCH --> NEWREAD{Readings newer than last sync?}
+    NEWREAD -->|não| TIMER
+    NEWREAD -->|sim| INGEST[Store each as EventType.glucose, EventSource.cgm, bypassing the interactive question/priority/emergency pipeline]
+    INGEST --> TIMER
+  end
+
+  CONTINUE -.-> SYNC
+
+  NOTE[Onboarding branch only ever writes cgmUsaServico/cgmProvider/cgmLibreLinkUpConectado profile facts - no new EventType, EventStatus, DiabAIGlobalState, priority rule, or medical reasoning. Synced readings are stored directly as ordinary glucose events for history/education/chart use; per deliberate scope they do not currently re-enter EmergencyEngine or PriorityEngine, which only evaluate the live conversation stack - see glucose.mmd's emergencyImpact for interactively-collected readings. A dashboard chart of stored readings over the day is a read-only view over this same data, not a new FSM concept.]

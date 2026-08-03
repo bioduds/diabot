@@ -161,6 +161,28 @@ class FsmContract {
   static const nunoUsesRecentContext = true;
   static const nunoContextWindowTurns = 3;
 
+  static const cgmAskedDuringOnboarding = true;
+  static const cgmProfileFields = [
+    'cgmUsaServico',
+    'cgmProvider',
+    'cgmLibreLinkUpConectado',
+  ];
+  static const cgmDirectIntegrationProviders = [
+    'freestyle libre 2',
+    'freestyle libre 2 plus',
+    'freestyle libre 3',
+  ];
+  static const cgmIntegrationService = 'librelinkup';
+  static const cgmCredentialStorage = 'device-secure-storage-only';
+  static const cgmSyncIntervalSeconds = 60;
+  static const cgmSyncedReadingsEventType = 'glucose';
+  static const cgmSyncedReadingsSource = 'cgm';
+  static const cgmChangesGlobalState = false;
+  static const cgmChangesLifecycle = false;
+  static const cgmEmergencyImpact = false;
+  static const cgmPriorityImpact = false;
+  static const cgmDoesMedicalReasoning = false;
+
   static const interactionModes = ['free', 'guided'];
   static const freeModeInput = 'conversation-text-to-semantic-interpreter';
   static const guidedModeInput = 'field-specific-controls';

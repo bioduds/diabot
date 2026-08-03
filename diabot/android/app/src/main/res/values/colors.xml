@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches DiabAIPalette.background (lib/app_theme.dart) so the native
+         launch screen never flashes white before Flutter's first frame. -->
+    <color name="launch_background">#010714</color>
+</resources>

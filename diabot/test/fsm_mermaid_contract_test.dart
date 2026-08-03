@@ -95,6 +95,26 @@ void main() {
     expect(contract['contextWindowTurns'], FsmContract.nunoContextWindowTurns);
   });
 
+  test('CGM Mermaid contract keeps sync scoped to profile facts and glucose events', () {
+    final contract = readMermaidContract('$docs/cgm.mmd');
+
+    expect(contract['askedDuringOnboarding'], FsmContract.cgmAskedDuringOnboarding);
+    expect(strings(contract, 'profileFields'), FsmContract.cgmProfileFields);
+    expect(strings(contract, 'directIntegrationProviders'),
+        FsmContract.cgmDirectIntegrationProviders);
+    expect(contract['integrationService'], FsmContract.cgmIntegrationService);
+    expect(contract['credentialStorage'], FsmContract.cgmCredentialStorage);
+    expect(contract['syncIntervalSeconds'], FsmContract.cgmSyncIntervalSeconds);
+    expect(contract['syncedReadingsEventType'],
+        FsmContract.cgmSyncedReadingsEventType);
+    expect(contract['syncedReadingsSource'], FsmContract.cgmSyncedReadingsSource);
+    expect(contract['globalStateChange'], FsmContract.cgmChangesGlobalState);
+    expect(contract['lifecycleChange'], FsmContract.cgmChangesLifecycle);
+    expect(contract['emergencyImpact'], FsmContract.cgmEmergencyImpact);
+    expect(contract['priorityImpact'], FsmContract.cgmPriorityImpact);
+    expect(contract['medicalReasoning'], FsmContract.cgmDoesMedicalReasoning);
+  });
+
   test('module catalog keeps semantic routing and presentation separate', () {
     final contract = readMermaidContract('$docs/modules.mmd');
 

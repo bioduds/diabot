@@ -48,6 +48,10 @@ app.*.map.json
 
 # Android Studio will place build artifacts here
 /android/app/debug
+
+# Generated FSM handoff archive (docs/create_fsm_handoff_zip.sh); regenerate,
+# do not commit
+/docs/zip/
 /android/app/profile
 /android/app/release
 
