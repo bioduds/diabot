@@ -110,10 +110,14 @@ class ConversationOrchestrator {
   /// tapped quick-reply label / numeric entry — all treated the same way).
   /// When [audioBytes] is set (a recorded voice message), it is handed to
   /// [interpreter] directly instead of [rawText] — see `nlu.dart`.
+  /// [recentContext] is an optional short window of prior chat lines
+  /// passed through to the interpreter to shape Nuno's free_reply tone
+  /// (docs/fsm/nuno.mmd); it never affects event extraction or routing.
   Future<OrchestratorReply> respond(
     String rawText,
     SemanticInterpreter? interpreter, {
     Uint8List? audioBytes,
+    List<String> recentContext = const [],
   }) async {
     if (_state == DiabAIGlobalState.onboarding) {
       return _onboardingReply(await _initializationModule.respond(rawText));
@@ -165,7 +169,8 @@ class ConversationOrchestrator {
     }
 
     _state = DiabAIGlobalState.parsing;
-    await _parseAndPushEvents(rawText, interpreter, audioBytes: audioBytes);
+    await _parseAndPushEvents(rawText, interpreter,
+        audioBytes: audioBytes, recentContext: recentContext);
     if (_awaitingEducationQuestion) {
       return const OrchestratorReply('Qual é sua dúvida?');
     }
@@ -198,6 +203,7 @@ class ConversationOrchestrator {
     String rawText,
     SemanticInterpreter? interpreter, {
     Uint8List? audioBytes,
+    List<String> recentContext = const [],
   }) async {
     final bareNumber = _extractBareNumber(rawText);
     if (bareNumber != null) {
@@ -214,7 +220,8 @@ class ConversationOrchestrator {
       return;
     }
 
-    final extraction = await interpreter.interpret(rawText, audioBytes: audioBytes);
+    final extraction = await interpreter.interpret(rawText,
+        audioBytes: audioBytes, recentTurns: recentContext);
     if (extraction.events.isEmpty ||
         extraction.confidence < SemanticInterpreter.minimumConfidence) {
       _eventStack.add(EventInstance(

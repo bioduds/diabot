@@ -142,6 +142,25 @@ class FsmContract {
   static const semanticInterpreterChangesLifecycle = false;
   static const semanticInterpreterDoesMedicalReasoning = false;
 
+  static const nunoAppliesTo = 'unknown-intent-free-reply';
+  static const nunoInteractionMode = 'free';
+  static const nunoPersonaName = 'Nuno';
+  static const nunoTone = [
+    'calm',
+    'objective',
+    'non-alarmist',
+    'non-childish',
+  ];
+  static const nunoExplainsOnRequest = true;
+  static const nunoEmergencyBehavior = 'fast-and-decisive';
+  static const nunoDoesMedicalReasoning = false;
+  static const nunoInsulinDoseCalculation = false;
+  static const nunoDiagnosis = false;
+  static const nunoChangesGlobalState = false;
+  static const nunoChangesLifecycle = false;
+  static const nunoUsesRecentContext = true;
+  static const nunoContextWindowTurns = 3;
+
   static const interactionModes = ['free', 'guided'];
   static const freeModeInput = 'conversation-text-to-semantic-interpreter';
   static const guidedModeInput = 'field-specific-controls';

@@ -51,8 +51,15 @@ abstract interface class SemanticInterpreter {
   /// [audioBytes] is provided (a recorded voice message), it is sent to
   /// the model directly instead of [userText] — Gemma 4 is multimodal and
   /// extracts events from speech itself, so no separate transcription
-  /// step is needed.
-  Future<NluExtraction> interpret(String userText, {Uint8List? audioBytes});
+  /// step is needed. [recentTurns] is an optional short window of prior
+  /// chat lines (oldest first, e.g. "Usuário: ..." / "Nuno: ...") used
+  /// only to shape the tone of `free_reply` for an `unknown` intent — see
+  /// `docs/fsm/nuno.mmd`. It never changes event extraction.
+  Future<NluExtraction> interpret(
+    String userText, {
+    Uint8List? audioBytes,
+    List<String> recentTurns = const [],
+  });
 }
 
 /// On-device Gemma implementation of [SemanticInterpreter].
@@ -84,7 +91,9 @@ Eventos (nomes exatos): glucose (nível/medição de glicemia), meal (comeu, vai
 
 Entidades (emita só o que encontrar): glucose, food, carbs_grams, duration, intensity, insulin_type, dose, symptom_type, free_reply, profile_diabetes_type, profile_weight_kg, profile_height_cm, profile_age_years, profile_sex, profile_cgm, profile_insulin_pump, profile_insulin_carb_ratio, profile_correction_factor, profile_hypoglycemia_unawareness, profile_diagnosis_duration, profile_knowledge_level.
 
-Regras: pode haver mais de um evento na mesma frase; use confidence abaixo de 0.5 quando a frase for ambígua; se events for ["unknown"], inclua free_reply (resposta curta, acolhedora, sem orientação médica); nunca calcule dose, recomende tratamento ou invente dados.
+Regras: pode haver mais de um evento na mesma frase; use confidence abaixo de 0.5 quando a frase for ambígua; se events for ["unknown"], inclua free_reply; nunca calcule dose, recomende tratamento ou invente dados.
+
+Personalidade do free_reply (só quando events for exatamente ["unknown"] — ver docs/fsm/nuno.mmd): você é Nuno, o assistente de conversa do DiabAI. Tom calmo e objetivo, nunca alarmista, nunca infantil. Explique quando o usuário perguntar o motivo de algo. Se o contexto recente indicar uma emergência, seja direto e rápido. Frase curta, sem orientação médica, sem calcular dose, sem diagnosticar. Considere as últimas mensagens da conversa (se houver) para manter coerência.
 
 Entrada: agora a fome apertou
 Saída: {"events": ["meal"], "entities": {}, "confidence": 0.9}
@@ -105,7 +114,7 @@ Entrada: tenho 45 anos e peso 70kg
 Saída: {"events": ["profile"], "entities": {"profile_age_years": 45, "profile_weight_kg": 70}, "confidence": 0.85}
 
 Entrada: quero conversar sobre meu dia
-Saída: {"events": ["unknown"], "entities": {"free_reply": "Claro. Me conte o que aconteceu hoje."}, "confidence": 0.8}
+Saída: {"events": ["unknown"], "entities": {"free_reply": "Claro, me conte como foi o seu dia."}, "confidence": 0.8}
 ''';
 
   final LocalLLMRuntime llmRuntime;
@@ -119,7 +128,11 @@ Saída: {"events": ["unknown"], "entities": {"free_reply": "Claro. Me conte o qu
   /// ready, timeout, malformed JSON) so the orchestrator always has a
   /// safe fallback instead of crashing or showing raw model output.
   @override
-  Future<NluExtraction> interpret(String userText, {Uint8List? audioBytes}) async {
+  Future<NluExtraction> interpret(
+    String userText, {
+    Uint8List? audioBytes,
+    List<String> recentTurns = const [],
+  }) async {
     if (llmRuntime.status != LLMStatus.ready || _isInterpreting) {
       _logRuntimeOutcome(
         'skipped',
@@ -141,10 +154,16 @@ Saída: {"events": ["unknown"], "entities": {"free_reply": "Claro. Me conte o qu
     // the examples in the user turn gives the instruction-tuned model a
     // compact, consistent extraction task.
     final sanitized = userText.replaceAll('\n', ' ').trim();
+    // Only used to shape free_reply's tone for events == ["unknown"]; kept
+    // short (docs/fsm/nuno.mmd caps it at 3 turns) to limit prefill cost.
+    final contextBlock = recentTurns.isEmpty
+        ? ''
+        : 'Contexto recente da conversa:\n${recentTurns.join('\n')}\n\n';
     final promptText = audioBytes == null
-        ? '$_systemPrompt\nEntrada: $sanitized\nSaída: '
-        : '$_systemPrompt\nEntrada: (ouça a fala no áudio a seguir e '
-            'extraia dela exatamente como nos exemplos acima)\nSaída: ';
+        ? '$_systemPrompt\n${contextBlock}Entrada: $sanitized\nSaída: '
+        : '$_systemPrompt\n${contextBlock}Entrada: (ouça a fala no áudio a '
+            'seguir e extraia dela exatamente como nos exemplos acima)\n'
+            'Saída: ';
 
     _isInterpreting = true;
     var completed = false;

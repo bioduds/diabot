@@ -75,6 +75,26 @@ void main() {
         FsmContract.interactionModesChangeLifecycle);
   });
 
+  test('Nuno persona Mermaid contract keeps persona scoped to free_reply only', () {
+    final contract = readMermaidContract('$docs/nuno.mmd');
+
+    expect(contract['appliesTo'], FsmContract.nunoAppliesTo);
+    expect(contract['interactionMode'], FsmContract.nunoInteractionMode);
+    expect(contract['persona'], FsmContract.nunoPersonaName);
+    expect(strings(contract, 'tone'), FsmContract.nunoTone);
+    expect(contract['explainsOnRequest'], FsmContract.nunoExplainsOnRequest);
+    expect(contract['emergencyBehavior'], FsmContract.nunoEmergencyBehavior);
+    expect(contract['medicalReasoning'],
+        FsmContract.nunoDoesMedicalReasoning);
+    expect(contract['insulinDoseCalculation'],
+        FsmContract.nunoInsulinDoseCalculation);
+    expect(contract['diagnosis'], FsmContract.nunoDiagnosis);
+    expect(contract['globalStateChange'], FsmContract.nunoChangesGlobalState);
+    expect(contract['lifecycleChange'], FsmContract.nunoChangesLifecycle);
+    expect(contract['usesRecentContext'], FsmContract.nunoUsesRecentContext);
+    expect(contract['contextWindowTurns'], FsmContract.nunoContextWindowTurns);
+  });
+
   test('module catalog keeps semantic routing and presentation separate', () {
     final contract = readMermaidContract('$docs/modules.mmd');
 

@@ -61,7 +61,11 @@ class _SemanticInterpreter implements SemanticInterpreter {
   final NluExtraction extraction;
 
   @override
-  Future<NluExtraction> interpret(String userText, {Uint8List? audioBytes}) async =>
+  Future<NluExtraction> interpret(
+    String userText, {
+    Uint8List? audioBytes,
+    List<String> recentTurns = const [],
+  }) async =>
       extraction;
 }
 

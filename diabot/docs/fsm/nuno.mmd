@@ -1,0 +1,11 @@
+%% fsm-contract: {"appliesTo":"unknown-intent-free-reply","interactionMode":"free","persona":"Nuno","tone":["calm","objective","non-alarmist","non-childish"],"explainsOnRequest":true,"emergencyBehavior":"fast-and-decisive","medicalReasoning":false,"insulinDoseCalculation":false,"diagnosis":false,"globalStateChange":false,"lifecycleChange":false,"usesRecentContext":true,"contextWindowTurns":3}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  TEXT[Free-text user input, free mode only] --> INTERPRETER[SemanticInterpreter]
+  HISTORY[Last 3 chat turns] --> INTERPRETER
+  INTERPRETER --> CLASSIFY{events == unknown?}
+  CLASSIFY -->|no| STRUCTURED[Structured event candidates, no persona text]
+  CLASSIFY -->|yes| PERSONA[Nuno persona shapes free_reply: calm, objective, never alarmist, never childish, explains when asked, decisive in emergencies]
+  PERSONA --> REPLY[free_reply shown to the user]
+
+  NOTE[Nuno only shapes the wording of free_reply already produced by the semantic interpreter contract. It never creates DiabAIGlobalState or EventStatus, never changes lifecycle, never calculates insulin doses, never diagnoses, and never runs in Guided Mode, where field-specific controls answer directly.]

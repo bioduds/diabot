@@ -407,7 +407,25 @@ class _ChatPageState extends State<ChatPage> {
     Uint8List? audioBytes,
   }) async {
     return _orchestrator.respond(prompt, _semanticInterpreter,
-        audioBytes: audioBytes);
+        audioBytes: audioBytes, recentContext: _recentContextLines());
+  }
+
+  /// Last few chat turns (oldest first, excluding the prompt just sent),
+  /// only used to shape Nuno's free_reply tone — see docs/fsm/nuno.mmd.
+  List<String> _recentContextLines() {
+    if (_messages.length <= 1) return const [];
+    final history = _messages.sublist(0, _messages.length - 1);
+    const maxTurns = FsmContract.nunoContextWindowTurns;
+    final recent = history.length > maxTurns
+        ? history.sublist(history.length - maxTurns)
+        : history;
+    return recent.map((message) {
+      final speaker = message.role == 'user' ? 'Usuário' : 'Nuno';
+      final text = message.text.length > 200
+          ? '${message.text.substring(0, 200)}...'
+          : message.text;
+      return '$speaker: $text';
+    }).toList();
   }
 
   /// The FSM's single approved exception: a `question` event delegates
