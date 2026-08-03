@@ -102,6 +102,11 @@ class GuidedModuleCatalog {
       titleKey: 'module.cgm.title',
       icon: Icons.sensors_outlined,
     ),
+    'timeline': GuidedModuleDefinition(
+      id: 'timeline',
+      titleKey: 'module.timeline.title',
+      icon: Icons.timeline_outlined,
+    ),
   };
 
   static GuidedModuleDefinition forEvent(EventType type) {

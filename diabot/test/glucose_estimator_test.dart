@@ -45,6 +45,29 @@ void main() {
       expect(estimate.observed, 152);
     });
 
+    test('residual is zero on the first reading (no prior prediction exists)', () {
+      final estimator = GlucoseEstimator();
+      final estimate = estimator.addReading(140, DateTime(2026, 1, 1, 8));
+      expect(estimate.residual, 0);
+    });
+
+    test('residual reflects the gap between observed and the pre-update prediction', () {
+      final estimator = GlucoseEstimator();
+      final start = DateTime(2026, 1, 1, 8);
+      estimator.addReading(100, start);
+      // Stable readings settle the filter near a ~0 velocity, so its next
+      // prediction stays close to 100 \u2014 a sudden jump to 160 should
+      // produce a large positive residual (observed far above predicted).
+      for (var i = 1; i <= 5; i++) {
+        estimator.addReading(100, start.add(Duration(minutes: 5 * i)));
+      }
+      final jump = estimator.addReading(
+        160,
+        start.add(const Duration(minutes: 30)),
+      );
+      expect(jump.residual, greaterThan(30));
+    });
+
     test('repeated stable readings converge and confidence improves well past a single reading', () {
       final estimator = GlucoseEstimator();
       final start = DateTime(2026, 1, 1, 8);
@@ -139,6 +162,7 @@ void main() {
         confidence: 0.99,
         sigma: 2.9,
         lagMinutes: 10,
+        residual: 0,
       );
       const medium = GlucoseEstimate(
         observed: 100,
@@ -148,6 +172,7 @@ void main() {
         confidence: 0.6,
         sigma: 4,
         lagMinutes: 10,
+        residual: 0,
       );
       const low = GlucoseEstimate(
         observed: 100,
@@ -157,6 +182,7 @@ void main() {
         confidence: 0.2,
         sigma: 7,
         lagMinutes: 10,
+        residual: 0,
       );
 
       expect(high.confidenceLevel, GlucoseConfidenceLevel.high);

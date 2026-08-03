@@ -13,6 +13,7 @@
     "module.profile.title": "Perfil",
     "module.education.title": "Dúvida",
     "module.cgm.title": "Sensor CGM",
+    "module.timeline.title": "Linha do tempo",
     "guided.exit": "Sair",
     "guided.inputHint": "Digite sua resposta",
     "guided.submitTooltip": "Enviar resposta"

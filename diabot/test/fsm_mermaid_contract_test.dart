@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:diabai/cgm/past_event_interpreter.dart';
 import 'package:diabai/events.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -250,5 +251,27 @@ void main() {
     expect(contract['emergencyImpact'], isFalse);
     expect(contract['priorityImpact'], isFalse);
     expect(contract['knowledgeImpact'], isFalse);
+  });
+
+  test('Past Event Interpreter Mermaid contract keeps hypotheses non-authoritative', () {
+    final contract = readMermaidContract('$docs/past_event_interpreter.mmd');
+
+    expect(strings(contract, 'hypothesisTypes'), names(HypothesisType.values));
+    expect(
+        strings(contract, 'hypothesisStatuses'), names(HypothesisStatus.values));
+    expect(strings(contract, 'inputs'), FsmContract.pastEventInterpreterInputs);
+    expect(strings(contract, 'outputs'), FsmContract.pastEventInterpreterOutputs);
+    expect(contract['conversationOwner'],
+        FsmContract.pastEventInterpreterConversationOwner);
+    expect(contract['globalStateChange'],
+        FsmContract.pastEventInterpreterChangesGlobalState);
+    expect(contract['lifecycleChange'],
+        FsmContract.pastEventInterpreterChangesLifecycle);
+    expect(contract['emergencyImpact'],
+        FsmContract.pastEventInterpreterEmergencyImpact);
+    expect(contract['priorityImpact'],
+        FsmContract.pastEventInterpreterPriorityImpact);
+    expect(contract['medicalReasoning'],
+        FsmContract.pastEventInterpreterDoesMedicalReasoning);
   });
 }

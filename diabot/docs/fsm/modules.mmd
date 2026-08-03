@@ -1,4 +1,4 @@
-%% fsm-contract: {"guidedEventModules":["glucose","insulin","meal","exercise","illness","ketones","medication","symptoms"],"supportModules":["onboarding","emergency","event-context","profile","education","cgm"],"moduleIdentity":"canonical-event-type-or-support-id","titleSource":"localized-module-catalog","guidedControls":"field-spec-kind-and-canonical-option-id","semanticRouting":"llm-event-candidates-only","kernelHumanLanguage":false,"globalStateChange":false,"lifecycleChange":false}
+%% fsm-contract: {"guidedEventModules":["glucose","insulin","meal","exercise","illness","ketones","medication","symptoms"],"supportModules":["onboarding","emergency","event-context","profile","education","cgm","timeline"],"moduleIdentity":"canonical-event-type-or-support-id","titleSource":"localized-module-catalog","guidedControls":"field-spec-kind-and-canonical-option-id","semanticRouting":"llm-event-candidates-only","kernelHumanLanguage":false,"globalStateChange":false,"lifecycleChange":false}
 %% This contract is checked by test/fsm_mermaid_contract_test.dart.
 flowchart LR
   TEXT[Free text] --> LLM[Semantic interpreter]
@@ -12,5 +12,6 @@ flowchart LR
   CONTEXT[Event context] --> SUPPORT
   EDUCATION[Education] --> SUPPORT
   CGM[CGM] --> SUPPORT
+  TIMELINE[Past-event hypothesis timeline] --> SUPPORT
 
   NOTE[The Kernel handles canonical identifiers and values only. Human language belongs to the LLM prompt and localization resources, never Kernel routing. Modules do not create global states or lifecycle transitions.]

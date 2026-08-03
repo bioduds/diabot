@@ -19,6 +19,7 @@ class GlucoseEstimate {
     required this.confidence,
     required this.sigma,
     required this.lagMinutes,
+    required this.residual,
   });
 
   /// Raw sensor/manual reading, mg/dL \u2014 exactly as measured, never altered.
@@ -46,6 +47,14 @@ class GlucoseEstimate {
   /// Minutes [estimatedNow] projects ahead of [observed]/[estimated] — the
   /// interstitial lag it compensates (see [GlucoseEstimator.lagMinutes]).
   final double lagMinutes;
+
+  /// The Kalman filter's innovation for this reading: [observed] minus the
+  /// value the filter had already *predicted* right before this update
+  /// (i.e. before [observed] was incorporated). Zero for the very first
+  /// reading, since there is no prior prediction to diverge from. This is
+  /// the raw signal the Past Event Interpreter watches for statistically
+  /// significant divergence — see lib/cgm/past_event_interpreter.dart.
+  final double residual;
   double get confidencePercent => confidence * 100;
 
   GlucoseConfidenceLevel get confidenceLevel {
@@ -110,17 +119,22 @@ class GlucoseEstimator {
       fresh.update(mgdl);
       _filter = fresh;
       _lastReadingAt = at;
-      return _estimateFrom(fresh, mgdl);
+      return _estimateFrom(fresh, mgdl, residual: 0);
     }
 
     final dtMinutes = at.difference(lastAt).inSeconds / 60.0;
     if (dtMinutes > 0) filter.predict(dtMinutes);
+    final predictedValue = filter.value;
     filter.update(mgdl);
     _lastReadingAt = at;
-    return _estimateFrom(filter, mgdl);
+    return _estimateFrom(filter, mgdl, residual: mgdl - predictedValue);
   }
 
-  GlucoseEstimate _estimateFrom(KalmanFilter2D filter, double observed) {
+  GlucoseEstimate _estimateFrom(
+    KalmanFilter2D filter,
+    double observed, {
+    required double residual,
+  }) {
     // estimatedNow = value + velocity * lag is a linear combination of both
     // states, so its uncertainty must account for the velocity's own
     // variance (and its covariance with the value), not just the value's
@@ -138,6 +152,7 @@ class GlucoseEstimator {
       confidence: _confidenceFromSigma(sigma),
       sigma: sigma,
       lagMinutes: lagMinutes,
+      residual: residual,
     );
   }
 

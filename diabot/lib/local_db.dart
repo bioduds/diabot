@@ -4,6 +4,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
+import 'cgm/past_event_interpreter.dart';
 import 'cgm_sync_engine.dart' show CgmWindowGateway;
 import 'events.dart';
 
@@ -20,7 +21,8 @@ class LocalDatabase
       FsmStoreGateway,
       RecentEventReader,
       ProfileSnapshotGateway,
-      CgmWindowGateway {
+      CgmWindowGateway,
+      HypothesisGateway {
   LocalDatabase._();
   static final LocalDatabase instance = LocalDatabase._();
 
@@ -33,7 +35,7 @@ class LocalDatabase
     final path = p.join(dir.path, 'diabai.db');
     final db = await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE events (
@@ -62,6 +64,21 @@ class LocalDatabase
             updated_at TEXT NOT NULL
           )
         ''');
+        await db.execute('''
+          CREATE TABLE hypotheses (
+            id TEXT PRIMARY KEY,
+            type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            estimated_start TEXT NOT NULL,
+            estimated_peak TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            magnitude REAL NOT NULL,
+            explanation TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          )
+        ''');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -83,6 +100,23 @@ class LocalDatabase
             CREATE TABLE profile_snapshot (
               id INTEGER PRIMARY KEY CHECK (id = 1),
               payload TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            )
+          ''');
+        }
+        if (oldVersion < 4) {
+          await db.execute('''
+            CREATE TABLE hypotheses (
+              id TEXT PRIMARY KEY,
+              type TEXT NOT NULL,
+              status TEXT NOT NULL,
+              estimated_start TEXT NOT NULL,
+              estimated_peak TEXT NOT NULL,
+              confidence REAL NOT NULL,
+              magnitude REAL NOT NULL,
+              explanation TEXT NOT NULL,
+              evidence TEXT NOT NULL,
+              created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
             )
           ''');
@@ -240,6 +274,85 @@ class LocalDatabase
     );
   }
 
+  @override
+  Future<void> upsertHypothesisIfAbsent(EventHypothesis hypothesis) async {
+    final db = await _open();
+    final now = DateTime.now().toIso8601String();
+    await db.insert(
+      'hypotheses',
+      {
+        'id': hypothesis.id,
+        'type': hypothesis.type.name,
+        'status': hypothesis.status.name,
+        'estimated_start': hypothesis.estimatedStart.toIso8601String(),
+        'estimated_peak': hypothesis.estimatedPeak.toIso8601String(),
+        'confidence': hypothesis.confidence,
+        'magnitude': hypothesis.magnitude,
+        'explanation': hypothesis.explanation,
+        'evidence': jsonEncode(hypothesis.evidence),
+        'created_at': now,
+        'updated_at': now,
+      },
+      // Never overwrites a row the user already resolved — see
+      // [HypothesisGateway.upsertHypothesisIfAbsent].
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+  }
+
+  @override
+  Future<void> updateHypothesisStatus(
+    String id, {
+    required HypothesisStatus status,
+    HypothesisType? type,
+  }) async {
+    final db = await _open();
+    await db.update(
+      'hypotheses',
+      {
+        'status': status.name,
+        if (type != null) 'type': type.name,
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  @override
+  Future<List<EventHypothesis>> hypothesesInWindow(
+    DateTime start,
+    DateTime end,
+  ) async {
+    final db = await _open();
+    final rows = await db.query(
+      'hypotheses',
+      where: 'estimated_peak >= ? AND estimated_peak <= ?',
+      whereArgs: [start.toIso8601String(), end.toIso8601String()],
+      orderBy: 'estimated_peak ASC',
+    );
+    return rows.map(_hypothesisFromRow).toList();
+  }
+
+  EventHypothesis _hypothesisFromRow(Map<String, dynamic> row) {
+    Map<String, dynamic> evidence;
+    try {
+      evidence = jsonDecode(row['evidence'] as String) as Map<String, dynamic>;
+    } catch (_) {
+      evidence = const {};
+    }
+    return EventHypothesis(
+      id: row['id'] as String,
+      type: HypothesisType.values.byName(row['type'] as String),
+      status: HypothesisStatus.values.byName(row['status'] as String),
+      estimatedStart: DateTime.parse(row['estimated_start'] as String),
+      estimatedPeak: DateTime.parse(row['estimated_peak'] as String),
+      confidence: (row['confidence'] as num).toDouble(),
+      magnitude: (row['magnitude'] as num).toDouble(),
+      explanation: row['explanation'] as String,
+      evidence: evidence,
+    );
+  }
+
   /// Wipes all locally stored data. Called by the build-number-triggered
   /// reset in main.dart during active testing.
   Future<void> clearAll() async {
@@ -247,5 +360,6 @@ class LocalDatabase
     await db.delete('events');
     await db.delete('fsm_audit');
     await db.delete('profile_snapshot');
+    await db.delete('hypotheses');
   }
 }

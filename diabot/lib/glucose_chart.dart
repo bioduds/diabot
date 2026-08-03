@@ -3,13 +3,21 @@ import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:fl_chart/fl_chart.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_theme.dart';
 import 'cgm/glucose_estimator.dart';
+import 'cgm/past_event_interpreter.dart';
 import 'cgm_sync_engine.dart';
 import 'librelinkup.dart';
 import 'local_db.dart';
+import 'profile_engine.dart';
+import 'profile_view.dart';
+
+enum _ChartMenuAction { clearDebugData }
 
 class _GlucosePoint {
   const _GlucosePoint(this.at, this.mgdl, this.source, {this.isLive = false});
@@ -79,6 +87,7 @@ class GlucoseChartPage extends StatefulWidget {
     required this.chatOverlay,
     required this.chatExpanded,
     required this.onOpenChat,
+    required this.onHypothesisTap,
   });
 
   final LocalDatabase database;
@@ -103,6 +112,12 @@ class GlucoseChartPage extends StatefulWidget {
   /// message in the conversation.
   final void Function(String report) onOpenChat;
 
+  /// Called when the user taps a Past Event Interpreter timeline marker
+  /// — the Timeline's own job ends here; it's the parent's/Nuno's job to
+  /// turn the tap into a conversation (Sim/Corrigir/Ignorar), never this
+  /// widget's. See docs/fsm/past_event_interpreter.mmd.
+  final void Function(EventHypothesis hypothesis) onHypothesisTap;
+
   @override
   State<GlucoseChartPage> createState() => _GlucoseChartPageState();
 }
@@ -121,6 +136,13 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
   LibreLinkUpSnapshot? _snapshot;
   bool _syncingSnapshot = false;
   Timer? _refreshTimer;
+
+  /// Pending hypotheses for the currently visible window, as persisted by
+  /// [HypothesisGateway.hypothesesInWindow] — recomputed by
+  /// [_refreshHypotheses] every time the chart's own data reloads. This
+  /// state only feeds the tappable markers in [_buildHypothesisMarkers];
+  /// it never drives glucose plotting itself.
+  List<EventHypothesis> _hypotheses = const [];
 
   @override
   void initState() {
@@ -190,6 +212,60 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
       _asOf = asOf;
       _loading = false;
     });
+    await _refreshHypotheses();
+  }
+
+  /// Re-runs [PastEventInterpreter.analyze] over the chart's own sensor
+  /// series plus already-logged meal/insulin/exercise events in the same
+  /// window, persists any new hypotheses (existing ones the user already
+  /// resolved are left untouched — see
+  /// [HypothesisGateway.upsertHypothesisIfAbsent]), then reloads the
+  /// visible window from storage so [_hypotheses] always reflects the
+  /// user's own confirm/correct/dismiss decisions, not just this run's
+  /// fresh analysis. This method only observes/interprets and persists;
+  /// it never opens the Nuno conversation itself — see
+  /// docs/fsm/past_event_interpreter.mmd.
+  Future<void> _refreshHypotheses() async {
+    final points = _points;
+    if (points.length < 2) {
+      if (mounted) setState(() => _hypotheses = const []);
+      return;
+    }
+    final estimates = _estimateSeries(points);
+    final samples = [
+      for (final p in points) GlucoseSample(at: p.at, mgdl: p.mgdl),
+    ];
+    final knownEvents = <KnownContextEvent>[];
+    const knownEventTypes = {
+      'meal': HypothesisType.meal,
+      'insulin': HypothesisType.insulin,
+      'exercise': HypothesisType.exercise,
+    };
+    for (final entry in knownEventTypes.entries) {
+      final rows = await widget.database.recentEventsOfType(entry.key, _window);
+      for (final row in rows) {
+        try {
+          knownEvents.add(KnownContextEvent(
+            type: entry.value,
+            at: DateTime.parse(row['created_at'] as String),
+          ));
+        } catch (_) {
+          // Skip malformed rows rather than failing hypothesis analysis.
+        }
+      }
+    }
+    final fresh = const PastEventInterpreter().analyze(
+      samples: samples,
+      estimates: estimates,
+      knownEvents: knownEvents,
+    );
+    for (final hypothesis in fresh) {
+      await widget.database.upsertHypothesisIfAbsent(hypothesis);
+    }
+    final stored =
+        await widget.database.hypothesesInWindow(_windowStart, _effectiveAsOf);
+    if (!mounted) return;
+    setState(() => _hypotheses = stored);
   }
 
   /// Readings after the active source filter, collapsed to at most one
@@ -314,6 +390,90 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
     ];
   }
 
+  /// The chart's x-axis upper bound (hours since [_windowStart]) \u2014 shared
+  /// by [_buildChartData] (so fl_chart's own scale matches this) and
+  /// [_buildHypothesisMarkers] (so a marker's horizontal position lines up
+  /// with the sensor point it explains), instead of two independent
+  /// computations silently drifting apart.
+  double _chartMaxX(List<_GlucosePoint> points) {
+    final forecastSpots = _forecastSpots(points);
+    final windowHours = _window.inHours.toDouble();
+    final forecastMaxX =
+        forecastSpots.isEmpty ? windowHours : forecastSpots.map((s) => s.x).reduce(math.max);
+    return math.max(windowHours, forecastMaxX);
+  }
+
+  static const Map<HypothesisType, String> _hypothesisEmoji = {
+    HypothesisType.meal: '\u{1F37D}\u{FE0F}',
+    HypothesisType.insulin: '\u{1F489}',
+    HypothesisType.exercise: '\u{1F3C3}',
+    HypothesisType.dawnPhenomenon: '\u{1F634}',
+    HypothesisType.stress: '\u{1F61F}',
+  };
+
+  /// Reserved size (logical px) fl_chart carves out of the left axis for
+  /// tick labels in [_buildChartData]'s `leftTitles` \u2014 kept in sync with
+  /// that value so markers align with the plotted data instead of an axis
+  /// label.
+  static const double _chartLeftAxisReservedWidth = 36;
+
+  /// Non-intrusive tappable emoji markers for [_hypotheses], one per
+  /// hypothesis, positioned above the plot area at the x matching
+  /// [EventHypothesis.estimatedPeak]. Only the Timeline's own concern
+  /// (layout/positioning) lives here \u2014 tapping just reports the tap to
+  /// the parent via [GlucoseChartPage.onHypothesisTap], which owns turning
+  /// it into a Nuno conversation. See docs/fsm/past_event_interpreter.mmd.
+  Widget _buildHypothesisMarkers(List<_GlucosePoint> points) {
+    if (_hypotheses.isEmpty) return const SizedBox.shrink();
+    final maxX = _chartMaxX(points);
+    if (maxX <= 0) return const SizedBox.shrink();
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const plotLeft = _chartLeftAxisReservedWidth;
+        final plotWidth = (constraints.maxWidth - plotLeft).clamp(0, constraints.maxWidth);
+        return Stack(
+          children: [
+            for (final hypothesis in _hypotheses)
+              Builder(builder: (context) {
+                final x = _xFor(hypothesis.estimatedPeak);
+                if (x < 0 || x > maxX) return const SizedBox.shrink();
+                final fraction = x / maxX;
+                final left = plotLeft + fraction * plotWidth - 12;
+                final isPending = hypothesis.status == HypothesisStatus.pending;
+                return Positioned(
+                  left: left.clamp(0, constraints.maxWidth - 24).toDouble(),
+                  top: 4,
+                  child: GestureDetector(
+                    onTap: () => widget.onHypothesisTap(hypothesis),
+                    child: Opacity(
+                      opacity: isPending ? 1.0 : 0.45,
+                      child: Container(
+                        width: 24,
+                        height: 24,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: DiabAIPalette.surface,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: DiabAIPalette.surfaceBorder,
+                            width: 1,
+                          ),
+                        ),
+                        child: Text(
+                          _hypothesisEmoji[hypothesis.type] ?? '\u2753',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final points = _points;
@@ -322,9 +482,38 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
         title: Text('Glicemia \u2014 últimas ${_windowLabel(_window)}'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.person_outline),
+            tooltip: 'Ver perfil',
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => ProfileViewPage(
+                profileEngine: ProfileEngine(
+                  snapshotGateway: LocalDatabase.instance,
+                ),
+              ),
+            )),
+          ),
+          IconButton(
             icon: const Icon(Icons.settings_outlined),
             tooltip: 'Configurações de glicemia',
             onPressed: _openSettings,
+          ),
+          PopupMenuButton<_ChartMenuAction>(
+            icon: const Icon(Icons.more_vert),
+            onSelected: (action) {
+              switch (action) {
+                case _ChartMenuAction.clearDebugData:
+                  _clearDebugData();
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: _ChartMenuAction.clearDebugData,
+                child: ListTile(
+                  leading: Icon(Icons.delete_forever_outlined),
+                  title: Text('Apagar dados de teste'),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -370,7 +559,14 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
                                           height:
                                               MediaQuery.sizeOf(context).height *
                                                   0.4,
-                                          child: LineChart(_buildChartData(context)),
+                                          child: Stack(
+                                            children: [
+                                              LineChart(_buildChartData(context)),
+                                              Positioned.fill(
+                                                child: _buildHypothesisMarkers(points),
+                                              ),
+                                            ],
+                                          ),
                                         ),
                                         const SizedBox(height: 8),
                                         _buildLegend(context),
@@ -430,6 +626,36 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
         onSourceFilterChanged: (s) => setState(() => _sourceFilter = s),
       ),
     ));
+  }
+
+  Future<void> _clearDebugData() async {
+    final shouldClear = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Apagar dados de teste?'),
+        content: const Text(
+          'Isso apaga perfil, eventos, auditoria e sessão local deste dispositivo.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            icon: const Icon(Icons.delete_forever),
+            label: const Text('Apagar'),
+          ),
+        ],
+      ),
+    );
+    if (shouldClear != true) return;
+
+    await LocalDatabase.instance.clearAll();
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.clear();
+    await GoogleSignIn().signOut();
+    await FirebaseAuth.instance.signOut();
   }
 
   /// Floats over the content instead of taking a line in the layout \u2014
@@ -837,9 +1063,7 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
         .max(0, math.min(math.min(math.min(dataMin, estimateMin), forecastMin), _targetLow) - 20)
         .toDouble();
     final windowHours = _window.inHours.toDouble();
-    final forecastMaxX =
-        forecastSpots.isEmpty ? windowHours : forecastSpots.map((s) => s.x).reduce(math.max);
-    final maxX = math.max(windowHours, forecastMaxX);
+    final maxX = _chartMaxX(points);
     final tickInterval = (windowHours / 4).clamp(1.0, windowHours).toDouble();
     final showDate = _window.inHours > 24;
 

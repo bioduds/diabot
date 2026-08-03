@@ -15,6 +15,7 @@ import 'package:record/record.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_theme.dart';
+import 'cgm/past_event_interpreter.dart';
 import 'cgm_sync_engine.dart';
 import 'events.dart';
 import 'glucose_chart.dart';
@@ -184,6 +185,16 @@ class _HomeShellState extends State<HomeShell> {
     if (!_chatExpanded) setState(() => _chatExpanded = true);
   }
 
+  /// Tapped a Past Event Interpreter timeline marker — hands the hypothesis
+  /// off to Nuno's chat panel and expands it, exactly like
+  /// [_openChat]/[_receiveGlucoseReport] does for the deterministic glucose
+  /// report. The chart/Timeline never converses itself; see
+  /// docs/fsm/past_event_interpreter.mmd.
+  void _openHypothesis(EventHypothesis hypothesis) {
+    _chatKey.currentState?._receiveHypothesisPrompt(hypothesis);
+    if (!_chatExpanded) setState(() => _chatExpanded = true);
+  }
+
   void _collapseChat() {
     if (_chatExpanded) setState(() => _chatExpanded = false);
   }
@@ -199,6 +210,7 @@ class _HomeShellState extends State<HomeShell> {
       cgmSyncEngine: _cgmSyncEngine,
       chatExpanded: _chatExpanded,
       onOpenChat: _openChat,
+      onHypothesisTap: _openHypothesis,
       chatOverlay: ChatPage(
         key: _chatKey,
         startOnboarding: widget.startOnboarding,
@@ -308,6 +320,17 @@ class _ChatPageState extends State<ChatPage> {
   bool _isLoading = false;
   _InteractionMode _interactionMode = _InteractionMode.free;
   _GuidedPrompt? _guidedPrompt;
+
+  /// The hypothesis currently being resolved through the Sim/Corrigir/
+  /// Ignorar flow started by [_receiveHypothesisPrompt], or null when no
+  /// timeline conversation is in progress. See
+  /// docs/fsm/past_event_interpreter.mmd.
+  EventHypothesis? _pendingHypothesis;
+
+  /// True only between tapping "Corrigir" and the user's next free-text
+  /// answer, which is routed through the normal orchestrator pipeline
+  /// (instead of being treated as another Sim/Corrigir/Ignorar tap).
+  bool _awaitingHypothesisCorrection = false;
   final Talker _talker = Talker();
   late final SemanticDiagnostics _semanticDiagnostics =
       SemanticDiagnostics(_talker);
@@ -477,8 +500,12 @@ class _ChatPageState extends State<ChatPage> {
     _presentReply(reply);
   }
 
-  Future<void> _sendGuidedValue(String value) =>
-      _sendMessage(value, true);
+  Future<void> _sendGuidedValue(String value) {
+    if (_guidedPrompt?.moduleId == 'timeline') {
+      return _handleTimelineGuidedValue(value);
+    }
+    return _sendMessage(value, true);
+  }
 
   Future<void> _exitGuidedMode() async {
     if (_isLoading) return;
@@ -529,6 +556,153 @@ class _ChatPageState extends State<ChatPage> {
       _messages.add(Message('user', 'Pedi um relatório da minha glicemia.'));
       _messages.add(Message('assistant', report));
     });
+  }
+
+  /// Opens the Sim/Corrigir/Ignorar conversation for a Past Event
+  /// Interpreter hypothesis, tapped from the Timeline (see
+  /// [GlucoseChartPage.onHypothesisTap]). This is the ONLY place a
+  /// hypothesis turns into a Nuno conversation \u2014 the interpreter/Timeline
+  /// never converse themselves. Reuses the existing guided-prompt-bar
+  /// mechanism (like every other guided module) instead of a bespoke UI.
+  void _receiveHypothesisPrompt(EventHypothesis hypothesis) {
+    final question = '${hypothesis.explanation} Foi isso que aconteceu?';
+    setState(() {
+      _pendingHypothesis = hypothesis;
+      _awaitingHypothesisCorrection = false;
+      _messages.add(Message('assistant', question));
+      _guidedPrompt = _GuidedPrompt(
+        moduleId: 'timeline',
+        kind: FieldKind.option,
+        question: question,
+        options: const ['✔️ Sim', '✏️ Corrigir', '❌ Ignorar'],
+      );
+      _interactionMode = _InteractionMode.guided;
+    });
+  }
+
+  /// A short first-person phrase describing [type], used to hand a
+  /// confirmed hypothesis to the SAME meal/insulin/exercise guided module
+  /// the user would normally trigger by typing it themselves — never a
+  /// new/duplicate classification path. Returns null for hypothesis types
+  /// with no corresponding guided module (dawn phenomenon/stress): those
+  /// are only ever logged to the knowledge base, never routed anywhere.
+  String? _syntheticConfirmationText(HypothesisType type) {
+    switch (type) {
+      case HypothesisType.meal:
+        return 'Comi algo';
+      case HypothesisType.insulin:
+        return 'Apliquei insulina';
+      case HypothesisType.exercise:
+        return 'Fiz exercício';
+      case HypothesisType.dawnPhenomenon:
+      case HypothesisType.stress:
+        return null;
+    }
+  }
+
+  /// Maps an [OrchestratorReply.guidedModuleId] back to the
+  /// [HypothesisType] it resolves — used only to record what a "Corrigir"
+  /// answer turned out to actually be, never to drive classification.
+  HypothesisType? _hypothesisTypeForModuleId(String? moduleId) {
+    switch (moduleId) {
+      case 'meal':
+        return HypothesisType.meal;
+      case 'insulin':
+        return HypothesisType.insulin;
+      case 'exercise':
+        return HypothesisType.exercise;
+      default:
+        return null;
+    }
+  }
+
+  /// Handles a tap on the timeline's Sim/Corrigir/Ignorar options (or, once
+  /// "Corrigir" is chosen, the free-text answer that follows) — the only
+  /// place [_pendingHypothesis] is ever resolved. See
+  /// docs/fsm/past_event_interpreter.mmd for why this stays separate from
+  /// the deterministic FSM's own guided modules.
+  Future<void> _handleTimelineGuidedValue(String value) async {
+    final hypothesis = _pendingHypothesis;
+    if (hypothesis == null) {
+      setState(() {
+        _guidedPrompt = null;
+        _interactionMode = _InteractionMode.free;
+      });
+      return;
+    }
+
+    if (_awaitingHypothesisCorrection) {
+      _awaitingHypothesisCorrection = false;
+      setState(() {
+        _messages.add(Message('user', value));
+        _isLoading = true;
+      });
+      final reply = await _getOrchestratorReply(value);
+      if (!mounted) return;
+      await LocalDatabase.instance.updateHypothesisStatus(
+        hypothesis.id,
+        status: HypothesisStatus.corrected,
+        type: _hypothesisTypeForModuleId(reply.guidedModuleId),
+      );
+      _pendingHypothesis = null;
+      _presentReply(reply);
+      return;
+    }
+
+    switch (value) {
+      case '✔️ Sim':
+        await LocalDatabase.instance.updateHypothesisStatus(
+          hypothesis.id,
+          status: HypothesisStatus.confirmed,
+        );
+        final synthetic = _syntheticConfirmationText(hypothesis.type);
+        _pendingHypothesis = null;
+        if (synthetic == null) {
+          setState(() {
+            _messages.add(Message('user', value));
+            _messages.add(
+              Message('assistant', 'Certo, obrigado por confirmar!'),
+            );
+            _guidedPrompt = null;
+            _interactionMode = _InteractionMode.free;
+          });
+          return;
+        }
+        setState(() {
+          _messages.add(Message('user', value));
+          _isLoading = true;
+        });
+        final reply = await _getOrchestratorReply(synthetic);
+        if (!mounted) return;
+        _presentReply(reply);
+        return;
+      case '✏️ Corrigir':
+        _awaitingHypothesisCorrection = true;
+        setState(() {
+          _messages.add(Message('user', value));
+          _messages.add(Message('assistant', 'O que aconteceu, então?'));
+          _guidedPrompt = _GuidedPrompt(
+            moduleId: 'timeline',
+            kind: FieldKind.freeText,
+            question: 'O que aconteceu, então?',
+          );
+          _interactionMode = _InteractionMode.guided;
+        });
+        return;
+      case '❌ Ignorar':
+      default:
+        await LocalDatabase.instance.updateHypothesisStatus(
+          hypothesis.id,
+          status: HypothesisStatus.dismissed,
+        );
+        _pendingHypothesis = null;
+        setState(() {
+          _messages.add(Message('user', value));
+          _messages.add(Message('assistant', 'Tudo bem, sem problemas.'));
+          _guidedPrompt = null;
+          _interactionMode = _InteractionMode.free;
+        });
+    }
   }
 
   /// Routes [prompt] through the on-device event parser + the FSM

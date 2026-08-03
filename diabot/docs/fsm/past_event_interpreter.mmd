@@ -1,0 +1,21 @@
+%% fsm-contract: {"hypothesisTypes":["meal","insulin","exercise","dawnPhenomenon","stress"],"hypothesisStatuses":["pending","confirmed","corrected","dismissed"],"inputs":["estimatedState","observedGlucose","residual","velocity","acceleration","kalmanConfidence","temporalContext","knownMeals","knownInsulin","knownExercise"],"outputs":["EventHypothesis"],"conversationOwner":"nuno","globalStateChange":false,"lifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"medicalReasoning":false}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  KALMAN[Kalman estimator: predicted value/velocity before each update] --> RESIDUAL[Residual = Observado - Predito]
+  RESIDUAL --> SIGNIFICANT{Divergence statistically significant?}
+  SIGNIFICANT -->|no| DISCARD[No hypothesis]
+  SIGNIFICANT -->|yes| CONTEXT[Known meals / insulin / exercise nearby]
+  CONTEXT -->|already explained| DISCARD
+  CONTEXT -->|unexplained| CLASSIFY[Classify by residual sign, velocity, acceleration, time of day]
+  CLASSIFY --> HYPOTHESIS[EventHypothesis: type, estimatedStart, estimatedPeak, confidence, magnitude, explanation, evidence, status=pending]
+  HYPOTHESIS --> STORE[(Local hypothesis log: initial knowledge-base record)]
+  HYPOTHESIS --> TIMELINE[Timeline: emoji marker, organizes/presents only, never interrupts the user]
+  TIMELINE -->|user taps marker| NUNO[Nuno persona: proactive hypothesis conversation, see docs/fsm/nuno.mmd for free-reply scope]
+  NUNO -->|Sim| CONFIRM[status=confirmed; hands off to the matching existing guided module]
+  NUNO -->|Corrigir| CORRECT[User states what happened via the normal semantic-interpreter free-text path; status=corrected, type updated to the resolved EventType]
+  NUNO -->|Ignorar| DISMISS[status=dismissed; marker greyed out]
+  CONFIRM --> KNOWLEDGE[(Knowledge-base log: hypothesis, confidence, user response, final event, timestamp, physiological context)]
+  CORRECT --> KNOWLEDGE
+  DISMISS --> KNOWLEDGE
+
+  NOTE[The Past Event Interpreter only observes and interprets: it computes residual/velocity/acceleration and proposes EventHypothesis objects, it never converses with the user. The Timeline only organizes and presents hypotheses as markers. Only Nuno converses, learns, and turns a hypothesis into a real event through the existing modules/semantic-interpreter/lifecycle contracts, which this module never bypasses, duplicates, or reimplements. It creates no DiabAIGlobalState, no EventStatus/lifecycle transition, and has no Emergency/Priority Engine impact of its own.]

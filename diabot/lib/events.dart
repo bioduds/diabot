@@ -207,12 +207,38 @@ class FsmContract {
     'profile',
     'education',
     'cgm',
+    'timeline',
   ];
   static const moduleIdentity = 'canonical-event-type-or-support-id';
   static const moduleTitleSource = 'localized-module-catalog';
   static const moduleGuidedControls = 'field-spec-kind-and-canonical-option-id';
   static const moduleSemanticRouting = 'llm-event-candidates-only';
   static const moduleKernelHumanLanguage = false;
+
+  // Past Event Interpreter (docs/fsm/past_event_interpreter.mmd): a
+  // passive analysis engine over the Kalman estimator's residual. It
+  // never converses with the user directly — only Nuno does, once the
+  // Timeline surfaces a tapped marker. See lib/cgm/past_event_interpreter.dart
+  // for HypothesisType/HypothesisStatus.
+  static const pastEventInterpreterInputs = [
+    'estimatedState',
+    'observedGlucose',
+    'residual',
+    'velocity',
+    'acceleration',
+    'kalmanConfidence',
+    'temporalContext',
+    'knownMeals',
+    'knownInsulin',
+    'knownExercise',
+  ];
+  static const pastEventInterpreterOutputs = ['EventHypothesis'];
+  static const pastEventInterpreterConversationOwner = 'nuno';
+  static const pastEventInterpreterChangesGlobalState = false;
+  static const pastEventInterpreterChangesLifecycle = false;
+  static const pastEventInterpreterEmergencyImpact = false;
+  static const pastEventInterpreterPriorityImpact = false;
+  static const pastEventInterpreterDoesMedicalReasoning = false;
   static const modulesChangeGlobalState = false;
   static const modulesChangeLifecycle = false;
 
