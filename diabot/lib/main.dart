@@ -133,14 +133,109 @@ class _PostAuthGateState extends State<_PostAuthGate> {
     if (_onboardingComplete == null) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-    return ChatPage(startOnboarding: _onboardingComplete == false);
+    return HomeShell(startOnboarding: _onboardingComplete == false);
+  }
+}
+
+/// The app's home shell once signed in: [GlucoseChartPage] is always the
+/// backdrop, with the Nuno [ChatPage] embedded as a panel that slides up
+/// over it. During first-run onboarding the panel starts expanded (so the
+/// conversation that collects the initial profile data is what the user
+/// sees) and automatically slides back down to reveal Glicemia as the
+/// main screen once onboarding finishes. If onboarding was already done
+/// in a previous session, Glicemia loads directly with the chat collapsed.
+class HomeShell extends StatefulWidget {
+  const HomeShell({super.key, required this.startOnboarding});
+
+  final bool startOnboarding;
+
+  @override
+  State<HomeShell> createState() => _HomeShellState();
+}
+
+class _HomeShellState extends State<HomeShell> {
+  // Follows a linked LibreLinkUp account every 60s while the app is open
+  // and stores new readings as ordinary glucose events — see
+  // docs/fsm/cgm.mmd. A no-op (cheap secure-storage read) until onboarding
+  // connects an account. Shared between the Glicemia backdrop and the
+  // embedded chat's onboarding flow.
+  final CgmSyncEngine _cgmSyncEngine = CgmSyncEngine(
+    credentialStore: LibreLinkUpCredentialStore(),
+    storeGateway: LocalDatabase.instance,
+  );
+
+  final GlobalKey<_ChatPageState> _chatKey = GlobalKey<_ChatPageState>();
+  late bool _chatExpanded = widget.startOnboarding;
+
+  @override
+  void initState() {
+    super.initState();
+    _cgmSyncEngine.start();
+  }
+
+  @override
+  void dispose() {
+    _cgmSyncEngine.stop();
+    super.dispose();
+  }
+
+  void _openChat(String report) {
+    _chatKey.currentState?._receiveGlucoseReport(report);
+    if (!_chatExpanded) setState(() => _chatExpanded = true);
+  }
+
+  void _collapseChat() {
+    if (_chatExpanded) setState(() => _chatExpanded = false);
+  }
+
+  void _handleOnboardingComplete() {
+    setState(() => _chatExpanded = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GlucoseChartPage(
+      database: LocalDatabase.instance,
+      cgmSyncEngine: _cgmSyncEngine,
+      chatExpanded: _chatExpanded,
+      onOpenChat: _openChat,
+      chatOverlay: ChatPage(
+        key: _chatKey,
+        startOnboarding: widget.startOnboarding,
+        embedded: true,
+        onCollapse: widget.startOnboarding ? null : _collapseChat,
+        onOnboardingComplete: _handleOnboardingComplete,
+      ),
+    );
   }
 }
 
 class ChatPage extends StatefulWidget {
-  const ChatPage({super.key, this.startOnboarding = false});
+  const ChatPage({
+    super.key,
+    this.startOnboarding = false,
+    this.embedded = false,
+    this.onCollapse,
+    this.onOnboardingComplete,
+  });
 
   final bool startOnboarding;
+
+  /// True when this page is mounted as the sliding overlay panel inside
+  /// [HomeShell]/[GlucoseChartPage] rather than as a full-screen route.
+  /// Only changes the app bar's leading collapse button; the rest of the
+  /// chat UI is identical in both modes.
+  final bool embedded;
+
+  /// Shown as a leading collapse button (only while [embedded]) so the
+  /// user can retract the conversation back down over Glicemia. Null
+  /// during onboarding, when the panel cannot be collapsed yet.
+  final VoidCallback? onCollapse;
+
+  /// Fired once, the moment the onboarding conversation's guided flow
+  /// finishes, so [HomeShell] can slide the panel back down to reveal
+  /// Glicemia as the main screen.
+  final VoidCallback? onOnboardingComplete;
 
   @override
   State<ChatPage> createState() => _ChatPageState();
@@ -238,15 +333,6 @@ class _ChatPageState extends State<ChatPage> {
     ),
   );
 
-  // Follows a linked LibreLinkUp account every 60s while the app is open
-  // and stores new readings as ordinary glucose events — see
-  // docs/fsm/cgm.mmd. A no-op (cheap secure-storage read) until onboarding
-  // connects an account.
-  final CgmSyncEngine _cgmSyncEngine = CgmSyncEngine(
-    credentialStore: LibreLinkUpCredentialStore(),
-    storeGateway: LocalDatabase.instance,
-  );
-
   // Voice input (mic button) state. Recording is captured as a 16kHz mono
   // WAV file (<=30s, Gemma 4's native audio input limit) and sent to the
   // on-device model directly — Gemma 4 is multimodal and extracts events
@@ -268,7 +354,6 @@ class _ChatPageState extends State<ChatPage> {
     _audioPlayer.onPlayerComplete.listen((_) {
       if (mounted) setState(() => _playingAudioPath = null);
     });
-    _cgmSyncEngine.start();
     _bootstrapAfterLogin();
   }
 
@@ -405,6 +490,7 @@ class _ChatPageState extends State<ChatPage> {
 
   void _presentReply(OrchestratorReply reply) {
     final guidedKind = reply.guidedFieldKind;
+    final wasOnboarding = _guidedPrompt?.moduleId == 'onboarding';
     setState(() {
       // The reply's question/confirmation text must always reach the chat
       // log — guided mode only adds an input panel below it, it never
@@ -427,12 +513,17 @@ class _ChatPageState extends State<ChatPage> {
           guidedKind == null ? _InteractionMode.free : _InteractionMode.guided;
       _isLoading = false;
     });
+    // The onboarding guided flow just finished this turn — tell the shell
+    // so it can slide the chat panel back down over Glicemia.
+    if (wasOnboarding && guidedKind == null) {
+      widget.onOnboardingComplete?.call();
+    }
   }
 
-  /// Shows the deterministic glucose report handed back by
-  /// [GlucoseChartPage]'s "Pedir relatório de glicose a Nuno" button as a
-  /// normal chat turn \u2014 it's already computed real numbers, so it's
-  /// appended directly instead of round-tripping through the orchestrator.
+  /// Shows the deterministic glucose report handed over by
+  /// [GlucoseChartPage]'s "Conversar com Nuno" button as a normal chat
+  /// turn \u2014 it's already computed real numbers, so it's appended
+  /// directly instead of round-tripping through the orchestrator.
   void _receiveGlucoseReport(String report) {
     setState(() {
       _messages.add(Message('user', 'Pedi um relatório da minha glicemia.'));
@@ -722,7 +813,6 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
-    _cgmSyncEngine.stop();
     _llmRuntime?.dispose();
     _semanticDiagnostics.dispose();
     _rag.dispose();
@@ -912,6 +1002,13 @@ class _ChatPageState extends State<ChatPage> {
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
+        leading: widget.embedded
+            ? IconButton(
+                icon: const Icon(Icons.keyboard_arrow_down),
+                tooltip: 'Recolher conversa',
+                onPressed: widget.onCollapse,
+              )
+            : null,
         title: Row(
           children: [
             Container(
@@ -969,19 +1066,6 @@ class _ChatPageState extends State<ChatPage> {
           ],
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.show_chart_outlined),
-            onPressed: () async {
-              final report = await Navigator.of(context).push<String>(MaterialPageRoute(
-                builder: (_) => GlucoseChartPage(
-                  database: LocalDatabase.instance,
-                  cgmSyncEngine: _cgmSyncEngine,
-                ),
-              ));
-              if (report != null) _receiveGlucoseReport(report);
-            },
-            tooltip: 'Ver glicemia do dia',
-          ),
           IconButton(
             icon: const Icon(Icons.person_outline),
             onPressed: () => Navigator.of(context).push(MaterialPageRoute(

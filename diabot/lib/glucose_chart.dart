@@ -60,6 +60,9 @@ class GlucoseChartPage extends StatefulWidget {
     super.key,
     required this.database,
     required this.cgmSyncEngine,
+    required this.chatOverlay,
+    required this.chatExpanded,
+    required this.onOpenChat,
   });
 
   final LocalDatabase database;
@@ -68,6 +71,21 @@ class GlucoseChartPage extends StatefulWidget {
   /// fetch a richer on-demand [LibreLinkUpSnapshot] (target range, sensor,
   /// trend/color), never to duplicate its own reading sync.
   final CgmSyncEngine cgmSyncEngine;
+
+  /// The embedded Nuno chat panel (kept permanently mounted so its model
+  /// bootstrap/state survives being shown and hidden), slid up over this
+  /// page's content — everything below the "GLICEMIA ATUAL" header — when
+  /// [chatExpanded] is true. This page never navigates to a separate chat
+  /// screen anymore; Glicemia is the app's home.
+  final Widget chatOverlay;
+
+  /// Whether the chat overlay is currently slid into view.
+  final bool chatExpanded;
+
+  /// Requests that the parent expand the chat overlay, handing back the
+  /// deterministic assessment text so it can be surfaced as Nuno's first
+  /// message in the conversation.
+  final void Function(String report) onOpenChat;
 
   @override
   State<GlucoseChartPage> createState() => _GlucoseChartPageState();
@@ -249,52 +267,87 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : SafeArea(
-              child: Stack(
+              child: Column(
                 children: [
-                  Column(
-                    children: [
-                      Expanded(
-                        child: RefreshIndicator(
-                          onRefresh: _refreshAll,
-                          child: SingleChildScrollView(
-                            physics: const AlwaysScrollableScrollPhysics(),
-                            padding: const EdgeInsets.fromLTRB(12, 16, 20, 12),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (points.isEmpty)
-                                  const Padding(
-                                    padding: EdgeInsets.symmetric(vertical: 24),
-                                    child: Text(
-                                      'Nenhuma leitura de glicemia registrada nesse período/filtro. '
-                                      'Registre uma glicemia ou conecte um CGM no seu perfil.',
-                                      textAlign: TextAlign.center,
-                                    ),
-                                  )
-                                else ...[
-                                  Center(child: _buildCurrentReading(context)),
-                                  const SizedBox(height: 16),
-                                  SizedBox(
-                                    height: MediaQuery.sizeOf(context).height * 0.4,
-                                    child: LineChart(_buildChartData(context)),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  _buildLegend(context),
-                                  const SizedBox(height: 12),
-                                  _buildNunoAssessment(context),
-                                ],
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                      _buildReportRequest(context),
-                    ],
+                  // Pinned above the chat overlay at all times, per the
+                  // requested layout: only "GLICEMIA ATUAL" + value/unit
+                  // stays visible once the conversation slides up.
+                  Padding(
+                    padding: const EdgeInsets.only(top: 16),
+                    child: Center(child: _buildCurrentReading(context)),
                   ),
-                  _buildSyncOverlay(context),
+                  Expanded(
+                    child: Stack(
+                      children: [
+                        Column(
+                          children: [
+                            Expanded(
+                              child: RefreshIndicator(
+                                onRefresh: _refreshAll,
+                                child: SingleChildScrollView(
+                                  physics: const AlwaysScrollableScrollPhysics(),
+                                  padding:
+                                      const EdgeInsets.fromLTRB(12, 16, 20, 12),
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      if (points.isEmpty)
+                                        const Padding(
+                                          padding:
+                                              EdgeInsets.symmetric(vertical: 24),
+                                          child: Text(
+                                            'Nenhuma leitura de glicemia registrada nesse período/filtro. '
+                                            'Registre uma glicemia ou conecte um CGM no seu perfil.',
+                                            textAlign: TextAlign.center,
+                                          ),
+                                        )
+                                      else ...[
+                                        SizedBox(
+                                          height:
+                                              MediaQuery.sizeOf(context).height *
+                                                  0.4,
+                                          child: LineChart(_buildChartData(context)),
+                                        ),
+                                        const SizedBox(height: 8),
+                                        _buildLegend(context),
+                                        const SizedBox(height: 12),
+                                        _buildNunoAssessment(context),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                            _buildReportRequest(context),
+                          ],
+                        ),
+                        _buildSyncOverlay(context),
+                        _buildChatOverlay(context),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
+    );
+  }
+
+  /// The Nuno conversation, slid up from the bottom to cover everything
+  /// below the pinned "GLICEMIA ATUAL" header (chart, legend, assessment
+  /// card, and the "Conversar com Nuno" button) when [chatExpanded] is
+  /// true. The panel itself stays mounted at all times (its position is
+  /// only animated) so the model/session state inside it is never lost.
+  Widget _buildChatOverlay(BuildContext context) {
+    return Positioned.fill(
+      child: IgnorePointer(
+        ignoring: !widget.chatExpanded,
+        child: AnimatedSlide(
+          offset: widget.chatExpanded ? Offset.zero : const Offset(0, 1),
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeInOut,
+          child: widget.chatOverlay,
+        ),
+      ),
     );
   }
 
@@ -512,18 +565,19 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
     );
   }
 
-  /// Hands the deterministic report text back to `main.dart` as this page's
-  /// pop result, where it's shown as a Nuno message in the real chat —
-  /// asking Nuno for something belongs in the conversation, not in a second
-  /// chat panel bolted onto this screen.
+  /// Hands the deterministic report text to the parent shell, which
+  /// expands the embedded Nuno chat overlay and surfaces it as Nuno's
+  /// first message — the conversation now slides up over this page
+  /// instead of navigating to a separate chat screen.
   Widget _buildReportRequest(BuildContext context) {
     final report = _buildAssessmentText();
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
       child: OutlinedButton.icon(
-        onPressed: report.isEmpty ? null : () => Navigator.of(context).pop(report),
+        onPressed:
+            report.isEmpty ? null : () => widget.onOpenChat(report),
         icon: const Icon(Icons.chat_bubble_outline, size: 18),
-        label: const Text('Pedir relatório de glicose a Nuno'),
+        label: const Text('Conversar com Nuno'),
         style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(44)),
       ),
     );

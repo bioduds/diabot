@@ -74,12 +74,12 @@ DiabAI is not a Flutter client for GlycoGuide. It is a separate Android-first pr
 ### Current capabilities
 
 - Firebase Google/email authentication and a local profile collected through the FSM onboarding entry point.
-- Typed input, quick replies, on-device speech-to-text, and a local chat UI.
+- Glicemia (the glucose chart) is the app's home screen; typed input, quick replies, on-device speech-to-text, and the Nuno chat live in a panel that slides up over it and retracts with a collapse button — see [diabot/README.md](diabot/README.md#navigation-glicemia-is-home-nuno-is-a-sliding-overlay).
 - A deterministic FSM that handles glucose, meals, insulin, exercise, symptoms, illness, ketones, medication, CGM, profile, and question events.
 - Missing-field collection, optional `when`/`where`/`what happened before` context, explicit event priority, event lifecycle tracking, and append-only FSM audit records.
 - Composed emergency pre-emption using available signals, followed by resume of pending events. This is non-clinically-validated conversational guidance, not emergency dispatch or medical decision support.
 - Local SQLite event logs and RAG retrieval for educational questions.
-- Optional LibreLinkUp CGM sync ([diabot/lib/cgm_sync_engine.dart](diabot/lib/cgm_sync_engine.dart)) and a read-only AGP-style glucose chart ([diabot/lib/glucose_chart.dart](diabot/lib/glucose_chart.dart)) over local event history, both documented in [diabot/README.md](diabot/README.md#glucose-chart-and-cgm-sync).
+- Optional LibreLinkUp CGM sync ([diabot/lib/cgm_sync_engine.dart](diabot/lib/cgm_sync_engine.dart)) and a read-only AGP-style glucose chart ([diabot/lib/glucose_chart.dart](diabot/lib/glucose_chart.dart)) over local event history — this chart is the app's home screen, documented in [diabot/README.md](diabot/README.md#glucose-chart-and-cgm-sync).
 
 ### Deliberate limits
 

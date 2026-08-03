@@ -3,7 +3,7 @@ description: A simple diabetes education chat client for Ollama.
 publish_to: none
 # Bump the build number before producing a device-test APK. Local profile
 # data is preserved across builds and can be cleared with the debug action.
-version: 0.1.0+42
+version: 0.1.0+43
 
 environment:
   sdk: ">=3.12.0 <4.0.0"
