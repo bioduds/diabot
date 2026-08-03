@@ -4,6 +4,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 
+import 'cgm_sync_engine.dart' show CgmWindowGateway;
 import 'events.dart';
 
 /// Local-only SQLite event log: every piece of health data DiabAI collects
@@ -15,7 +16,11 @@ import 'events.dart';
 ///
 /// Nothing here ever leaves the device; there is no network sync.
 class LocalDatabase
-  implements FsmStoreGateway, RecentEventReader, ProfileSnapshotGateway {
+  implements
+      FsmStoreGateway,
+      RecentEventReader,
+      ProfileSnapshotGateway,
+      CgmWindowGateway {
   LocalDatabase._();
   static final LocalDatabase instance = LocalDatabase._();
 
@@ -159,6 +164,48 @@ class LocalDatabase
       where: 'type = ? AND created_at >= ?',
       whereArgs: [type, cutoff],
       orderBy: 'id DESC',
+    );
+  }
+
+  /// Deletes stored `glucose` events timestamped further into the future
+  /// than [tolerance] \u2014 never real physiology, only possible from a
+  /// clock-skew or timezone-parsing bug (a past bug stored LibreLinkUp's
+  /// UTC timestamp as if it were already local, landing hours ahead of
+  /// now). Scoped to `glucose` only; other event types are untouched.
+  Future<void> deleteFutureGlucoseReadings({
+    Duration tolerance = const Duration(minutes: 2),
+  }) async {
+    final db = await _open();
+    final cutoff = DateTime.now().add(tolerance).toIso8601String();
+    await db.delete(
+      'events',
+      where: 'type = ? AND created_at > ?',
+      whereArgs: ['glucose', cutoff],
+    );
+  }
+
+  /// Deletes previously-synced CGM glucose events in [start]..[end] so
+  /// [CgmSyncEngine] can fully replace that window with a fresh fetch —
+  /// otherwise a corrected re-parse of the same period could sit right
+  /// alongside a stale, differently-shifted duplicate of the same real
+  /// reading (e.g. from the old UTC-as-local timestamp bug), zig-zagging
+  /// the chart between the two versions of the same history.
+  @override
+  Future<void> deleteCgmGlucoseReadingsInWindow(
+    DateTime start,
+    DateTime end,
+  ) async {
+    final db = await _open();
+    await db.delete(
+      'events',
+      where:
+          'type = ? AND created_at >= ? AND created_at <= ? AND payload LIKE ?',
+      whereArgs: [
+        'glucose',
+        start.toIso8601String(),
+        end.toIso8601String(),
+        '%"_source":"cgm"%',
+      ],
     );
   }
 

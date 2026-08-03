@@ -353,17 +353,38 @@ class LibreLinkUpClient {
     );
   }
 
-  LibreLinkUpReading? _parseMeasurement(Map<String, dynamic> json) {
-    final rawTimestamp =
-        json['FactoryTimestamp'] as String? ?? json['Timestamp'] as String?;
-    if (rawTimestamp == null) return null;
-    DateTime timestamp;
-    try {
-      // LibreLinkUp format: "8/2/2026 3:45:00 PM" (device-local time).
-      timestamp = DateFormat('M/d/yyyy h:mm:ss a').parse(rawTimestamp);
-    } catch (_) {
-      return null;
+  // LibreLinkUp always returns FactoryTimestamp in UTC and Timestamp in the
+  // reader/phone's local time (same convention GlycoGuide's Python side
+  // relies on in librelinkup_sync.py). Treating FactoryTimestamp as local,
+  // as this port previously did, shifts every reading by the device's UTC
+  // offset — e.g. showing a reading as being hours in the future in Brazil
+  // (UTC-3), which then anchors the chart window past the real "now" and
+  // hides all the actual data to the left of that fake future edge.
+  static const _libreDateFormat = 'M/d/yyyy h:mm:ss a';
+
+  DateTime? _parseLibreTimestamp(Map<String, dynamic> json) {
+    final factoryRaw = json['FactoryTimestamp'] as String?;
+    if (factoryRaw != null) {
+      try {
+        return DateFormat(_libreDateFormat).parseUtc(factoryRaw).toLocal();
+      } catch (_) {
+        return null;
+      }
     }
+    final localRaw = json['Timestamp'] as String?;
+    if (localRaw != null) {
+      try {
+        return DateFormat(_libreDateFormat).parse(localRaw);
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  LibreLinkUpReading? _parseMeasurement(Map<String, dynamic> json) {
+    final timestamp = _parseLibreTimestamp(json);
+    if (timestamp == null) return null;
     final mgdl = (json['ValueInMgPerDl'] as num?)?.toDouble() ??
         (json['Value'] as num?)?.toDouble();
     if (mgdl == null) return null;
@@ -376,15 +397,8 @@ class LibreLinkUpClient {
   }
 
   CgmReading? _parseCgmReading(Map<String, dynamic> json) {
-    final rawTimestamp =
-        json['FactoryTimestamp'] as String? ?? json['Timestamp'] as String?;
-    if (rawTimestamp == null) return null;
-    DateTime timestamp;
-    try {
-      timestamp = DateFormat('M/d/yyyy h:mm:ss a').parse(rawTimestamp);
-    } catch (_) {
-      return null;
-    }
+    final timestamp = _parseLibreTimestamp(json);
+    if (timestamp == null) return null;
     final mgdl = (json['ValueInMgPerDl'] as num?)?.toDouble() ??
         (json['Value'] as num?)?.toDouble();
     if (mgdl == null) return null;

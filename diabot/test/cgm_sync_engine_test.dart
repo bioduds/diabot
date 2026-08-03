@@ -18,6 +18,37 @@ class _MemoryGateway implements FsmStoreGateway {
   Future<void> storeSystemEvent(String type, Map<String, dynamic> data) async {}
 }
 
+class _WindowGateway implements FsmStoreGateway, CgmWindowGateway {
+  final events = <EventInstance>[];
+  final deletedWindows = <(DateTime, DateTime)>[];
+
+  @override
+  Future<void> recordTransition(KernelTransition transition) async {}
+
+  @override
+  Future<void> storeEvent(EventInstance event) async {
+    events.add(event);
+  }
+
+  @override
+  Future<void> storeSystemEvent(String type, Map<String, dynamic> data) async {}
+
+  @override
+  Future<void> deleteCgmGlucoseReadingsInWindow(
+    DateTime start,
+    DateTime end,
+  ) async {
+    deletedWindows.add((start, end));
+    events.removeWhere(
+      (e) =>
+          e.type == EventType.glucose &&
+          e.source == EventSource.cgm &&
+          !e.createdAt.isBefore(start) &&
+          !e.createdAt.isAfter(end),
+    );
+  }
+}
+
 class _FakeCredentialStore extends LibreLinkUpCredentialStore {
   _FakeCredentialStore({this.hasCredentials = true});
 
@@ -142,5 +173,62 @@ void main() {
 
     expect(gateway.events, hasLength(1));
     expect(gateway.events.single.createdAt, t2);
+  });
+
+  test(
+      'syncOnce() ignores a future-dated last-sync cursor (self-heals a '
+      'stale UTC-as-local timestamp bug) instead of starving forever',
+      () async {
+    final gateway = _MemoryGateway();
+    final t1 = DateTime.now().add(const Duration(minutes: 5));
+    final t2 = DateTime.now().add(const Duration(minutes: 10));
+    final store = _FakeCredentialStore()
+      ..lastSynced = DateTime.now().add(const Duration(hours: 3));
+    final engine = CgmSyncEngine(
+      credentialStore: store,
+      storeGateway: gateway,
+      client: _FakeClient([
+        LibreLinkUpReading(timestamp: t1, mgdl: 100),
+        LibreLinkUpReading(timestamp: t2, mgdl: 110),
+      ]),
+    );
+
+    await engine.syncOnce();
+
+    expect(gateway.events, hasLength(2));
+    expect(store.lastSynced, t2);
+  });
+
+  test(
+      "syncOnce() fully replaces the fetched window when storeGateway "
+      "supports CgmWindowGateway, so a re-parsed reading can't coexist with "
+      'a stale, differently-shifted duplicate of the same real reading',
+      () async {
+    final gateway = _WindowGateway();
+    final t1 = DateTime(2026, 1, 1, 8);
+    final t2 = DateTime(2026, 1, 1, 8, 5);
+    final staleDuplicate = EventInstance(
+      type: EventType.glucose,
+      source: EventSource.cgm,
+      createdAt: t1,
+      data: {'value': 999, 'measurementContext': 'cgm'},
+    )..transitionTo(EventStatus.stored, reason: 'stale');
+    gateway.events.add(staleDuplicate);
+    final store = _FakeCredentialStore();
+    final engine = CgmSyncEngine(
+      credentialStore: store,
+      storeGateway: gateway,
+      client: _FakeClient([
+        LibreLinkUpReading(timestamp: t1, mgdl: 100, trend: 'stable'),
+        LibreLinkUpReading(timestamp: t2, mgdl: 110, trend: 'rising'),
+      ]),
+    );
+
+    await engine.syncOnce();
+
+    expect(gateway.deletedWindows, [(t1, t2)]);
+    expect(gateway.events, hasLength(2));
+    expect(gateway.events.every((e) => e.data['value'] != 999), isTrue);
+    expect(store.lastSynced, t2);
   });
 }

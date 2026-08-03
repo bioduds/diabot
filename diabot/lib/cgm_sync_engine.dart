@@ -3,6 +3,16 @@ import 'dart:async';
 import 'events.dart';
 import 'librelinkup.dart';
 
+/// Optional extra capability on a [FsmStoreGateway]: replacing (not just
+/// appending to) previously-stored CGM readings within a time window.
+/// Lets [CgmSyncEngine] fully re-correct a fetched period on every sync
+/// instead of layering freshly (correctly) parsed readings on top of
+/// stale, differently-shifted duplicates of the same real reading — e.g.
+/// left over from the old UTC-as-local timestamp bug.
+abstract interface class CgmWindowGateway {
+  Future<void> deleteCgmGlucoseReadingsInWindow(DateTime start, DateTime end);
+}
+
 /// Background follower for a linked LibreLinkUp account: polls the
 /// FreeStyle Libre "graph" endpoint every
 /// [FsmContract.cgmSyncIntervalSeconds] while running and stores any
@@ -59,27 +69,46 @@ class CgmSyncEngine {
 
       var readings = await _fetchReadings(credentials, forceLogin: false);
       readings ??= await _fetchReadings(credentials, forceLogin: true);
-      if (readings == null) return;
+      if (readings == null || readings.isEmpty) return;
 
-      final lastSynced = await credentialStore.lastSyncedAt;
+      final windowGateway = storeGateway;
+      if (windowGateway is CgmWindowGateway) {
+        // Fully replaces the fetched window every cycle so a corrected
+        // re-parse of the same period can never leave a stale, differently
+        // -timestamped duplicate of a real reading sitting alongside it.
+        //
+        // `CgmWindowGateway` is unrelated to `FsmStoreGateway`, so an
+        // explicit cast is needed: Dart only promotes a local variable's
+        // static type via `is` when the tested type is a subtype of its
+        // declared type.
+        await (windowGateway as CgmWindowGateway).deleteCgmGlucoseReadingsInWindow(
+          readings.first.timestamp,
+          readings.last.timestamp,
+        );
+        await _storeReadings(readings);
+        await credentialStore.setLastSyncedAt(readings.last.timestamp);
+        return;
+      }
+
+      // Fallback for gateways without window-replace support (e.g. tests):
+      // the original incremental-only behavior.
+      //
+      // A `lastSyncedAt` cursor written while the (now-fixed) UTC-as-local
+      // parsing bug was still active can sit hours ahead of true now,
+      // which would permanently block every real reading from ever being
+      // "newer" than it again — silently starving the chart of new data.
+      // Treat a future-dated cursor as invalid so this self-heals instead.
+      final rawLastSynced = await credentialStore.lastSyncedAt;
+      final lastSynced =
+          rawLastSynced != null && rawLastSynced.isAfter(DateTime.now())
+              ? null
+              : rawLastSynced;
       final newReadings = lastSynced == null
           ? readings
           : readings.where((r) => r.timestamp.isAfter(lastSynced)).toList();
       if (newReadings.isEmpty) return;
 
-      for (final reading in newReadings) {
-        final event = EventInstance(
-          type: EventType.glucose,
-          source: EventSource.cgm,
-          createdAt: reading.timestamp,
-          data: {
-            'value': reading.mgdl,
-            'measurementContext': 'cgm',
-            if (reading.trend != null) 'trend': reading.trend,
-          },
-        )..transitionTo(EventStatus.stored, reason: 'cgm-auto-sync');
-        await storeGateway.storeEvent(event);
-      }
+      await _storeReadings(newReadings);
       await credentialStore.setLastSyncedAt(newReadings.last.timestamp);
     } catch (_) {
       // Best-effort background sync: a transient network/API failure is
@@ -87,6 +116,22 @@ class CgmSyncEngine {
       // error.
     } finally {
       _syncing = false;
+    }
+  }
+
+  Future<void> _storeReadings(List<LibreLinkUpReading> readings) async {
+    for (final reading in readings) {
+      final event = EventInstance(
+        type: EventType.glucose,
+        source: EventSource.cgm,
+        createdAt: reading.timestamp,
+        data: {
+          'value': reading.mgdl,
+          'measurementContext': 'cgm',
+          if (reading.trend != null) 'trend': reading.trend,
+        },
+      )..transitionTo(EventStatus.stored, reason: 'cgm-auto-sync');
+      await storeGateway.storeEvent(event);
     }
   }
 

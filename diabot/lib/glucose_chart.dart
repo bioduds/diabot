@@ -22,6 +22,13 @@ class _GlucosePoint {
 const double _minPlausibleMgdl = 20;
 const double _maxPlausibleMgdl = 600;
 
+/// A reading timestamped further into the future than this is never real
+/// physiology \u2014 it's a clock-skew or timezone-parsing artifact (e.g. a
+/// past bug that stored LibreLinkUp's UTC timestamp as if it were already
+/// local). Dropped instead of plotted, and self-heals any such rows still
+/// sitting in local storage from before that bug was fixed.
+const Duration _futureTolerance = Duration(minutes: 2);
+
 /// Two readings logged within this many minutes of each other are treated
 /// as the same instant (averaged) so the chart never has more than one
 /// y-value for a given x \u2014 it must render a proper function.
@@ -73,6 +80,10 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
   Duration _window = _windowOptions.first;
   String _sourceFilter = 'all'; // 'all' | 'manual' | 'cgm'
 
+  /// Set while the user is pressing/dragging on the chart, so the row above
+  /// it can show that spot's value instead of the default floating tooltip.
+  FlSpot? _touchedSpot;
+
   LibreLinkUpSnapshot? _snapshot;
   bool _syncingSnapshot = false;
   Timer? _refreshTimer;
@@ -118,7 +129,11 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
   Future<void> _load({bool silent = false}) async {
     if (!silent) setState(() => _loading = true);
     final asOf = DateTime.now();
+    // Purges any row still carrying a fake-future timestamp from the fixed
+    // UTC-parsing bug before it can be read back as "current"/plotted again.
+    await widget.database.deleteFutureGlucoseReadings(tolerance: _futureTolerance);
     final rows = await widget.database.recentEventsOfType('glucose', _window);
+    final futureCutoff = asOf.add(_futureTolerance);
     final raw = <_GlucosePoint>[];
     for (final row in rows) {
       try {
@@ -127,8 +142,10 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
         if (value is! num) continue;
         final mgdl = value.toDouble();
         if (mgdl < _minPlausibleMgdl || mgdl > _maxPlausibleMgdl) continue;
+        final at = DateTime.parse(row['created_at'] as String);
+        if (at.isAfter(futureCutoff)) continue;
         final source = payload['measurementContext'] == 'cgm' ? 'cgm' : 'manual';
-        raw.add(_GlucosePoint(DateTime.parse(row['created_at'] as String), mgdl, source));
+        raw.add(_GlucosePoint(at, mgdl, source));
       } catch (_) {
         // Skip malformed rows rather than failing the whole chart.
       }
@@ -159,6 +176,7 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
         : filtered.map((p) => p.at).reduce((a, b) => a.isAfter(b) ? a : b);
     final merged = live != null &&
             _sourceFilter != 'manual' &&
+            !live.timestamp.isAfter(DateTime.now().add(_futureTolerance)) &&
             live.timestamp.isAfter(_windowStart) &&
             (lastLocalAt == null || live.timestamp.isAfter(lastLocalAt))
         ? [...filtered, _GlucosePoint(live.timestamp, live.mgdl, 'cgm')]
@@ -184,7 +202,6 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
 
   static const double _defaultTargetLow = 70;
   static const double _defaultTargetHigh = 180;
-  static const int _bucketCount = 4;
 
   /// The patient's own configured target range when the LibreLinkUp
   /// snapshot has one, falling back to the generic clinical default.
@@ -192,26 +209,28 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
   double get _targetHigh => _snapshot?.targets?.targetHigh ?? _defaultTargetHigh;
   bool get _hasPersonalTargets => _snapshot?.targets?.targetLow != null;
 
-  DateTime get _windowStart => _asOf.subtract(_window);
+  /// [_asOf] is captured when local data loads, but a fresher reading can
+  /// already exist by the time this getter runs: the live snapshot resolves
+  /// later than `_load()`, and the independent background `CgmSyncEngine`
+  /// timer can write a newer local reading between one `_load()` call and
+  /// the next. Anchoring the window on whichever of the three is newest
+  /// keeps every real data point inside the plotted x-range, instead of
+  /// past the right edge where `FlClipData` would hide it \u2014 invisible on
+  /// screen even though the current-reading number (the same point) showed
+  /// correctly.
+  DateTime get _effectiveAsOf {
+    var latest = _asOf;
+    final liveAt = _snapshot?.current?.timestamp;
+    if (liveAt != null && liveAt.isAfter(latest)) latest = liveAt;
+    for (final p in _rawPoints) {
+      if (p.at.isAfter(latest)) latest = p.at;
+    }
+    return latest;
+  }
+
+  DateTime get _windowStart => _effectiveAsOf.subtract(_window);
 
   _GlucosePoint? get _current => _points.isEmpty ? null : _points.last;
-
-  List<double?> _bucketAverages() {
-    final points = _points;
-    final bucketSpan = _window.inMinutes / _bucketCount;
-    final sums = List<double>.filled(_bucketCount, 0);
-    final counts = List<int>.filled(_bucketCount, 0);
-    for (final point in points) {
-      final minutesFromStart = point.at.difference(_windowStart).inMinutes;
-      final bucket = (minutesFromStart / bucketSpan).floor().clamp(0, _bucketCount - 1);
-      sums[bucket] += point.mgdl;
-      counts[bucket]++;
-    }
-    return List.generate(
-      _bucketCount,
-      (i) => counts[i] == 0 ? null : sums[i] / counts[i],
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -254,9 +273,7 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
                                   )
                                 else ...[
                                   Center(child: _buildCurrentReading(context)),
-                                  const SizedBox(height: 12),
-                                  _buildHeaderRow(context),
-                                  const SizedBox(height: 4),
+                                  const SizedBox(height: 16),
                                   SizedBox(
                                     height: MediaQuery.sizeOf(context).height * 0.4,
                                     child: LineChart(_buildChartData(context)),
@@ -288,7 +305,10 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
         sourceFilter: _sourceFilter,
         onWindowChanged: (w) {
           setState(() => _window = w);
-          _load();
+          // A wider/narrower window changes _windowStart, so the live
+          // snapshot must be re-fetched too — otherwise this path would show
+          // an older current reading than the periodic refresh does.
+          _refreshAll();
         },
         onSourceFilterChanged: (s) => setState(() => _sourceFilter = s),
       ),
@@ -509,41 +529,6 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
     );
   }
 
-  Widget _buildHeaderRow(BuildContext context) {
-    final buckets = _bucketAverages();
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const SizedBox(width: 40),
-        Expanded(
-          child: Row(
-            children: List.generate(_bucketCount, (i) {
-              final average = buckets[i];
-              final inRange = average != null &&
-                  average >= _targetLow &&
-                  average <= _targetHigh;
-              return Expanded(
-                child: Text(
-                  average == null ? '--' : average.round().toString(),
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: average == null
-                        ? DiabAIPalette.iconMuted
-                        : inRange
-                            ? DiabAIPalette.textPrimary
-                            : DiabAIPalette.offline,
-                  ),
-                ),
-              );
-            }),
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _buildLegend(BuildContext context) {
     Widget swatch(Color color) => Container(
           width: 10,
@@ -612,15 +597,39 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
       maxY: maxY,
       clipData: const FlClipData.all(),
       lineTouchData: LineTouchData(
+        // The value itself is shown in the fixed row above the chart
+        // (_buildTouchedValueRow) instead of a floating bubble, which used
+        // to get clipped/hard to read near the chart's edges — keep this
+        // fully transparent so only the touched-spot indicator (line + dot)
+        // below still renders via the built-in touch handling.
         touchTooltipData: LineTouchTooltipData(
-          getTooltipColor: (_) => DiabAIPalette.background.withValues(alpha: 0.92),
-          getTooltipItems: (touchedSpots) => touchedSpots
-              .map((spot) => LineTooltipItem(
-                    '${spot.y.round()} mg/dL',
-                    const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
-                  ))
-              .toList(),
+          getTooltipColor: (_) => Colors.transparent,
+          tooltipPadding: EdgeInsets.zero,
+          tooltipMargin: 0,
+          getTooltipItems: (touchedSpots) =>
+              touchedSpots.map((_) => null).toList(),
         ),
+        touchCallback: (event, response) {
+          final spots = response?.lineBarSpots;
+          if (!event.isInterestedForInteractions || spots == null || spots.isEmpty) {
+            if (_touchedSpot != null) setState(() => _touchedSpot = null);
+            return;
+          }
+          setState(() => _touchedSpot = spots.first);
+        },
+        getTouchedSpotIndicator: (barData, spotIndexes) => spotIndexes
+            .map((_) => TouchedSpotIndicatorData(
+                  FlLine(color: DiabAIPalette.textPrimary.withValues(alpha: 0.5), strokeWidth: 1),
+                  FlDotData(
+                    getDotPainter: (spot, percent, bar, index) => FlDotCirclePainter(
+                      radius: 5,
+                      color: DiabAIPalette.textPrimary,
+                      strokeWidth: 2,
+                      strokeColor: DiabAIPalette.accent,
+                    ),
+                  ),
+                ))
+            .toList(),
       ),
       gridData: FlGridData(
         show: true,
@@ -693,6 +702,40 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
         ],
       ),
       extraLinesData: ExtraLinesData(
+        verticalLines: [
+          // Press-and-hold draws a dashed line straight up from the
+          // touched point to the top of the chart, with the value
+          // labeled there — instead of a floating tooltip bubble.
+          //
+          // `touched` is captured here as an immutable local so the
+          // `labelResolver`/`backgroundColor` closures below never
+          // dereference the mutable `_touchedSpot` field directly: fl_chart
+          // invokes them lazily during paint (including mid-animation when
+          // lerping between the previous and next `ExtraLinesData`), by
+          // which point `_touchedSpot` may already have been set back to
+          // null by a later `setState`, causing a null-check crash.
+          if (_touchedSpot case final touched?)
+            VerticalLine(
+              x: touched.x,
+              color: DiabAIPalette.textPrimary,
+              strokeWidth: 1,
+              dashArray: const [4, 4],
+              label: VerticalLineLabel(
+                show: true,
+                alignment: Alignment.topCenter,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                  backgroundColor:
+                      touched.y >= _targetLow && touched.y <= _targetHigh
+                          ? DiabAIPalette.online
+                          : DiabAIPalette.offline,
+                ),
+                labelResolver: (_) => ' ${touched.y.round()} ',
+              ),
+            ),
+        ],
         horizontalLines: [
           HorizontalLine(
             y: _targetHigh,

@@ -79,10 +79,11 @@ DiabAI is not a Flutter client for GlycoGuide. It is a separate Android-first pr
 - Missing-field collection, optional `when`/`where`/`what happened before` context, explicit event priority, event lifecycle tracking, and append-only FSM audit records.
 - Composed emergency pre-emption using available signals, followed by resume of pending events. This is non-clinically-validated conversational guidance, not emergency dispatch or medical decision support.
 - Local SQLite event logs and RAG retrieval for educational questions.
+- Optional LibreLinkUp CGM sync ([diabot/lib/cgm_sync_engine.dart](diabot/lib/cgm_sync_engine.dart)) and a read-only AGP-style glucose chart ([diabot/lib/glucose_chart.dart](diabot/lib/glucose_chart.dart)) over local event history, both documented in [diabot/README.md](diabot/README.md#glucose-chart-and-cgm-sync).
 
 ### Deliberate limits
 
-- No insulin-dose calculation, treatment recommendation, emergency calling, live CGM feed, trend analysis, charts, CSV export, or cloud sync of health records.
+- No insulin-dose calculation, treatment recommendation, emergency calling, trend/pattern analysis beyond the chart's template summary, CSV export, or cloud sync of health records.
 - `cgm` and `profile` events are recognized but do not yet have complete collection workflows.
 - The external Gemma model only extracts structured events. It does not generate the user-facing conversation. Without it, deterministic quick replies and bare numeric glucose entries still work; unconstrained free text is clarified instead.
 - When the interpreter finds no matching event (`unknown`), its `free_reply` text is shaped by the **Nuno** persona (calm, objective, never alarmist or childish, explains when asked) — see [diabot/docs/fsm/nuno.mmd](diabot/docs/fsm/nuno.mmd). This only affects wording in that one free-text case; it never changes state, lifecycle, or gives medical guidance. DiabAI is the product name, Nuno is the conversational assistant.
