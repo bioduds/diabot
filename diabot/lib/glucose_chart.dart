@@ -6,15 +6,25 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 
 import 'app_theme.dart';
+import 'cgm/glucose_estimator.dart';
 import 'cgm_sync_engine.dart';
 import 'librelinkup.dart';
 import 'local_db.dart';
 
 class _GlucosePoint {
-  const _GlucosePoint(this.at, this.mgdl, this.source);
+  const _GlucosePoint(this.at, this.mgdl, this.source, {this.isLive = false});
   final DateTime at;
   final double mgdl;
   final String source; // 'manual' | 'cgm'
+
+  /// True only for the point merged in directly from the on-demand
+  /// LibreLinkUp snapshot's `current` (see [_GlucoseChartPageState._points]).
+  /// It's always drawn connected to the rest of the line in [_segments],
+  /// regardless of how large the gap to the previous point is — unlike an
+  /// ordinary stale tail of local history, it's confirmed to be the sensor's
+  /// actual latest reading, so hiding that connection would make the
+  /// current number look orphaned from its own chart.
+  final bool isLive;
 }
 
 /// Sensor readings below/above these bounds are parsing glitches or sensor
@@ -37,6 +47,12 @@ const int _sameInstantMinutes = 1;
 /// A visual break is drawn whenever consecutive readings are further apart
 /// than this, instead of interpolating a line across a sensor gap.
 const Duration _maxGapForLine = Duration(minutes: 20);
+
+/// Forward horizons (minutes from "now") plotted as a dashed forecast line
+/// extending past the last real reading \u2014 a simple constant-velocity
+/// extrapolation from the Kalman filter's own current state, not a new
+/// model. See [_GlucoseChartPageState._forecastSpots].
+const List<double> _forecastHorizonsMinutes = [5, 10, 15];
 
 /// Selectable time-range filters for the chart.
 const List<Duration> _windowOptions = [
@@ -192,11 +208,12 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
     final lastLocalAt = filtered.isEmpty
         ? null
         : filtered.map((p) => p.at).reduce((a, b) => a.isAfter(b) ? a : b);
-    final merged = live != null &&
-            _sourceFilter != 'manual' &&
-            !live.timestamp.isAfter(DateTime.now().add(_futureTolerance)) &&
-            live.timestamp.isAfter(_windowStart) &&
-            (lastLocalAt == null || live.timestamp.isAfter(lastLocalAt))
+    final liveMerged = live != null &&
+        _sourceFilter != 'manual' &&
+        !live.timestamp.isAfter(DateTime.now().add(_futureTolerance)) &&
+        live.timestamp.isAfter(_windowStart) &&
+        (lastLocalAt == null || live.timestamp.isAfter(lastLocalAt));
+    final merged = liveMerged
         ? [...filtered, _GlucosePoint(live.timestamp, live.mgdl, 'cgm')]
         : filtered;
     final sums = <int, double>{};
@@ -208,7 +225,7 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
       sums[bucketMs] = (sums[bucketMs] ?? 0) + p.mgdl;
       counts[bucketMs] = (counts[bucketMs] ?? 0) + 1;
     }
-    return sums.keys
+    final result = sums.keys
         .map((ms) => _GlucosePoint(
               DateTime.fromMillisecondsSinceEpoch(ms),
               sums[ms]! / counts[ms]!,
@@ -216,6 +233,14 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
             ))
         .toList()
       ..sort((a, b) => a.at.compareTo(b.at));
+    // The live reading's own timestamp is the newest by construction (see
+    // the merge condition above), so after sorting it always lands last —
+    // mark that bucket as the connect-regardless-of-gap point.
+    if (liveMerged && result.isNotEmpty) {
+      final last = result.removeLast();
+      result.add(_GlucosePoint(last.at, last.mgdl, last.source, isLive: true));
+    }
+    return result;
   }
 
   static const double _defaultTargetLow = 70;
@@ -249,6 +274,45 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
   DateTime get _windowStart => _effectiveAsOf.subtract(_window);
 
   _GlucosePoint? get _current => _points.isEmpty ? null : _points.last;
+
+  /// Runs [points] (already chronological) through a fresh [GlucoseEstimator]
+  /// \u2014 recomputed from scratch each call rather than kept as long-lived
+  /// state, consistent with how [_points] itself is recomputed on every read
+  /// (see its doc comment). Cheap enough for a phone-local chart of at most
+  /// a few thousand points.
+  List<GlucoseEstimate> _estimateSeries(List<_GlucosePoint> points) {
+    final estimator = GlucoseEstimator();
+    return [for (final p in points) estimator.addReading(p.mgdl, p.at)];
+  }
+
+  /// The Kalman-based physiological estimate for the latest reading \u2014 see
+  /// lib/cgm/glucose_estimator.dart. Never replaces [_current]; only ever
+  /// shown alongside it.
+  GlucoseEstimate? get _latestEstimate {
+    final points = _points;
+    if (points.isEmpty) return null;
+    return _estimateSeries(points).last;
+  }
+
+  /// Dashed continuation of the Kalman line past the last real reading, at
+  /// [_forecastHorizonsMinutes] \u2014 pure constant-velocity extrapolation from
+  /// [GlucoseEstimate.estimatedNow]/[GlucoseEstimate.velocity] (the same
+  /// linear state-transition the filter itself uses in `predict()`), never
+  /// a new/independent model. Empty when there isn't yet a reading to
+  /// extrapolate from.
+  List<FlSpot> _forecastSpots(List<_GlucosePoint> points) {
+    if (points.isEmpty) return const [];
+    final estimate = _estimateSeries(points).last;
+    final anchorAt = points.last.at;
+    return [
+      FlSpot(_xFor(anchorAt), estimate.estimatedNow),
+      for (final minutes in _forecastHorizonsMinutes)
+        FlSpot(
+          _xFor(anchorAt.add(Duration(minutes: minutes.round()))),
+          estimate.estimatedNow + estimate.velocity * minutes,
+        ),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -438,21 +502,78 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
   Widget _buildCurrentReading(BuildContext context) {
     final current = _current;
     if (current == null) return const SizedBox.shrink();
-    final inRange = current.mgdl >= _targetLow && current.mgdl <= _targetHigh;
-    final color = inRange ? DiabAIPalette.online : DiabAIPalette.offline;
+    final estimate = _latestEstimate;
     final trendIcon = _trendIcon(_snapshot?.current?.trend);
+
+    final sensorColumn = _buildReadingColumn(
+      label: 'SENSOR',
+      value: current.mgdl,
+      trendIcon: trendIcon,
+    );
+    if (estimate == null) return sensorColumn;
+
+    final estimateColumn = _buildReadingColumn(
+      label: 'ATUAL',
+      value: estimate.estimatedNow,
+      onInfoTap: () => _showEstimateExplanation(context),
+      caption: '${_confidenceEmoji(estimate.confidencePercent)} '
+          '${estimate.confidencePercent.round()}% · '
+          '≈${estimate.lagMinutes.round()} min à frente',
+    );
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        sensorColumn,
+        const SizedBox(width: 20),
+        Padding(
+          padding: const EdgeInsets.only(top: 18),
+          child: Container(width: 1, height: 60, color: DiabAIPalette.surfaceBorder),
+        ),
+        const SizedBox(width: 20),
+        estimateColumn,
+      ],
+    );
+  }
+
+  /// One "SENSOR" or "ATUAL" reading block \u2014 always shown at equal visual
+  /// weight, never one hidden behind or promoted over the other, per spec:
+  /// the raw sensor value and the Kalman estimate are both real information
+  /// the user is entitled to see, all the time.
+  Widget _buildReadingColumn({
+    required String label,
+    required double value,
+    IconData? trendIcon,
+    VoidCallback? onInfoTap,
+    String? caption,
+  }) {
+    final inRange = value >= _targetLow && value <= _targetHigh;
+    final color = inRange ? DiabAIPalette.online : DiabAIPalette.offline;
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        const Text(
-          'GLICEMIA ATUAL',
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 1.2,
-            color: DiabAIPalette.iconMuted,
-          ),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 1.2,
+                color: DiabAIPalette.iconMuted,
+              ),
+            ),
+            if (onInfoTap != null) ...[
+              const SizedBox(width: 4),
+              GestureDetector(
+                onTap: onInfoTap,
+                child: const Icon(Icons.info_outline, size: 14, color: DiabAIPalette.iconMuted),
+              ),
+            ],
+          ],
         ),
         const SizedBox(height: 4),
         Row(
@@ -460,9 +581,9 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Text(
-              current.mgdl.round().toString(),
+              value.round().toString(),
               style: TextStyle(
-                fontSize: 48,
+                fontSize: 40,
                 fontWeight: FontWeight.bold,
                 color: color,
                 height: 1,
@@ -470,7 +591,7 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
             ),
             if (trendIcon != null) ...[
               const SizedBox(width: 4),
-              Icon(trendIcon, size: 28, color: color),
+              Icon(trendIcon, size: 24, color: color),
             ],
           ],
         ),
@@ -478,12 +599,51 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
         const Text(
           'mg/dL',
           style: TextStyle(
-            fontSize: 16,
+            fontSize: 14,
             fontWeight: FontWeight.w600,
             color: DiabAIPalette.textSecondary,
           ),
         ),
+        if (caption != null) ...[
+          const SizedBox(height: 4),
+          Text(caption, style: const TextStyle(fontSize: 11, color: DiabAIPalette.iconMuted)),
+        ],
       ],
+    );
+  }
+
+  /// Buckets [GlucoseEstimate.confidencePercent] into the colored-dot bands
+  /// requested for the "ATUAL" reading, so confidence reads at a glance
+  /// instead of requiring the user to interpret a raw percentage.
+  String _confidenceEmoji(double confidencePercent) {
+    if (confidencePercent >= 90) return '\u{1F7E2}'; // 🟢
+    if (confidencePercent >= 75) return '\u{1F7E1}'; // 🟡
+    if (confidencePercent >= 55) return '\u{1F7E0}'; // 🟠
+    return '\u{1F534}'; // 🔴
+  }
+
+  /// Explains, in plain language, what the physiological estimate is
+  /// derived from \u2014 keeps the number transparent instead of a black box.
+  void _showEstimateExplanation(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Estimativa fisiológica'),
+        content: const Text(
+          'O sensor mede a glicose do líquido intersticial, que normalmente '
+          'representa a glicemia de alguns minutos atrás.\n\n'
+          'O DiabAI utiliza um modelo matemático (Filtro de Kalman) para '
+          'estimar a glicemia fisiológica atual.\n\n'
+          'Quanto maior a confiança, maior a probabilidade de que essa '
+          'estimativa represente sua glicose neste momento.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Entendi'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -597,7 +757,17 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
         Row(mainAxisSize: MainAxisSize.min, children: [
           swatch(DiabAIPalette.accent),
           const SizedBox(width: 6),
-          Text('Glicemia', style: style),
+          const Text('Sensor', style: style),
+        ]),
+        Row(mainAxisSize: MainAxisSize.min, children: [
+          swatch(DiabAIPalette.accentAlt),
+          const SizedBox(width: 6),
+          const Text('Estimativa (Kalman)', style: style),
+        ]),
+        Row(mainAxisSize: MainAxisSize.min, children: [
+          swatch(DiabAIPalette.accentAlt),
+          const SizedBox(width: 6),
+          const Text('Previsão (+5/10/15min)', style: style),
         ]),
         Row(mainAxisSize: MainAxisSize.min, children: [
           swatch(DiabAIPalette.online),
@@ -615,13 +785,19 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
 
   /// Splits the sorted points into segments, breaking the line wherever the
   /// sensor gap exceeds [_maxGapForLine] so the chart never draws a
-  /// misleading interpolation across missing data.
+  /// misleading interpolation across missing data. The one exception is the
+  /// live/current point ([_GlucosePoint.isLive]): it's always connected to
+  /// the previous segment regardless of gap size, since it's confirmed to
+  /// be the sensor's actual latest reading (see [_GlucosePoint.isLive]),
+  /// not a stale local-history tail that genuinely went quiet.
   List<List<_GlucosePoint>> _segments() {
     final segments = <List<_GlucosePoint>>[];
     var current = <_GlucosePoint>[];
     _GlucosePoint? previous;
     for (final point in _points) {
-      if (previous != null && point.at.difference(previous.at) > _maxGapForLine) {
+      if (previous != null &&
+          !point.isLive &&
+          point.at.difference(previous.at) > _maxGapForLine) {
         if (current.isNotEmpty) segments.add(current);
         current = [];
       }
@@ -636,17 +812,40 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
 
   LineChartData _buildChartData(BuildContext context) {
     final points = _points;
+    final estimates = _estimateSeries(points);
+    final estimateByTime = {
+      for (var i = 0; i < points.length; i++) points[i].at: estimates[i],
+    };
+    final forecastSpots = _forecastSpots(points);
     final dataMax = points.map((p) => p.mgdl).reduce(math.max);
     final dataMin = points.map((p) => p.mgdl).reduce(math.min);
-    final maxY = math.max(dataMax, _targetHigh) + 20;
-    final minY = math.max(0, math.min(dataMin, _targetLow) - 20).toDouble();
+    final estimateMax = estimates.isEmpty
+        ? dataMax
+        : estimates.map((e) => e.estimatedNow).reduce(math.max);
+    final estimateMin = estimates.isEmpty
+        ? dataMin
+        : estimates.map((e) => e.estimatedNow).reduce(math.min);
+    final forecastMax = forecastSpots.isEmpty
+        ? estimateMax
+        : forecastSpots.map((s) => s.y).reduce(math.max);
+    final forecastMin = forecastSpots.isEmpty
+        ? estimateMin
+        : forecastSpots.map((s) => s.y).reduce(math.min);
+    final maxY =
+        math.max(math.max(math.max(dataMax, estimateMax), forecastMax), _targetHigh) + 20;
+    final minY = math
+        .max(0, math.min(math.min(math.min(dataMin, estimateMin), forecastMin), _targetLow) - 20)
+        .toDouble();
     final windowHours = _window.inHours.toDouble();
+    final forecastMaxX =
+        forecastSpots.isEmpty ? windowHours : forecastSpots.map((s) => s.x).reduce(math.max);
+    final maxX = math.max(windowHours, forecastMaxX);
     final tickInterval = (windowHours / 4).clamp(1.0, windowHours).toDouble();
     final showDate = _window.inHours > 24;
 
     return LineChartData(
       minX: 0,
-      maxX: windowHours,
+      maxX: maxX,
       minY: minY,
       maxY: maxY,
       clipData: const FlClipData.all(),
@@ -664,26 +863,40 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
               touchedSpots.map((_) => null).toList(),
         ),
         touchCallback: (event, response) {
-          final spots = response?.lineBarSpots;
+          // Two lines now share the touch surface (sensor + Kalman
+          // estimate) — only the sensor's spot drives the touched-value
+          // vertical line/label, exactly as before the estimate line existed.
+          final spots = response?.lineBarSpots
+              ?.where((s) => s.bar.color == DiabAIPalette.accent)
+              .toList();
           if (!event.isInterestedForInteractions || spots == null || spots.isEmpty) {
             if (_touchedSpot != null) setState(() => _touchedSpot = null);
             return;
           }
           setState(() => _touchedSpot = spots.first);
         },
-        getTouchedSpotIndicator: (barData, spotIndexes) => spotIndexes
-            .map((_) => TouchedSpotIndicatorData(
-                  FlLine(color: DiabAIPalette.textPrimary.withValues(alpha: 0.5), strokeWidth: 1),
-                  FlDotData(
-                    getDotPainter: (spot, percent, bar, index) => FlDotCirclePainter(
-                      radius: 5,
-                      color: DiabAIPalette.textPrimary,
-                      strokeWidth: 2,
-                      strokeColor: DiabAIPalette.accent,
-                    ),
-                  ),
-                ))
-            .toList(),
+        getTouchedSpotIndicator: (barData, spotIndexes) {
+          final isSensorBar = barData.color == DiabAIPalette.accent;
+          return spotIndexes.map((_) {
+            if (!isSensorBar) {
+              return const TouchedSpotIndicatorData(
+                FlLine(color: Colors.transparent, strokeWidth: 0),
+                FlDotData(show: false),
+              );
+            }
+            return TouchedSpotIndicatorData(
+              FlLine(color: DiabAIPalette.textPrimary.withValues(alpha: 0.5), strokeWidth: 1),
+              FlDotData(
+                getDotPainter: (spot, percent, bar, index) => FlDotCirclePainter(
+                  radius: 5,
+                  color: DiabAIPalette.textPrimary,
+                  strokeWidth: 2,
+                  strokeColor: DiabAIPalette.accent,
+                ),
+              ),
+            );
+          }).toList();
+        },
       ),
       gridData: FlGridData(
         show: true,
@@ -846,6 +1059,40 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
                   DiabAIPalette.accent.withValues(alpha: 0.25),
                   DiabAIPalette.accent.withValues(alpha: 0.0),
                 ],
+              ),
+            ),
+          ),
+        // Physiological (Kalman) estimate \u2014 thinner and in a different
+        // color than the sensor line, per design, and never shaded/filled so
+        // it always reads as a secondary, derived series rather than the
+        // primary data.
+        for (final segment in _segments())
+          LineChartBarData(
+            spots: segment
+                .map((p) => FlSpot(_xFor(p.at), estimateByTime[p.at]!.estimatedNow))
+                .toList(),
+            isCurved: true,
+            curveSmoothness: 0.15,
+            preventCurveOverShooting: true,
+            barWidth: 1.4,
+            color: DiabAIPalette.accentAlt,
+            dotData: const FlDotData(show: false),
+          ),
+        // Forward-looking forecast (+5/+10/+15min) \u2014 dashed and in the same
+        // color as the Kalman estimate line it continues from, so it reads
+        // as "the same series, but now projected" rather than new data.
+        if (forecastSpots.isNotEmpty)
+          LineChartBarData(
+            spots: forecastSpots,
+            isCurved: false,
+            barWidth: 1.4,
+            color: DiabAIPalette.accentAlt,
+            dashArray: const [4, 4],
+            dotData: FlDotData(
+              show: true,
+              getDotPainter: (spot, percent, bar, index) => FlDotCirclePainter(
+                radius: index == 0 ? 0 : 2.5,
+                color: DiabAIPalette.accentAlt,
               ),
             ),
           ),

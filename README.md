@@ -80,6 +80,7 @@ DiabAI is not a Flutter client for GlycoGuide. It is a separate Android-first pr
 - Composed emergency pre-emption using available signals, followed by resume of pending events. This is non-clinically-validated conversational guidance, not emergency dispatch or medical decision support.
 - Local SQLite event logs and RAG retrieval for educational questions.
 - Optional LibreLinkUp CGM sync ([diabot/lib/cgm_sync_engine.dart](diabot/lib/cgm_sync_engine.dart)) and a read-only AGP-style glucose chart ([diabot/lib/glucose_chart.dart](diabot/lib/glucose_chart.dart)) over local event history — this chart is the app's home screen, documented in [diabot/README.md](diabot/README.md#glucose-chart-and-cgm-sync).
+- A Kalman-filter glucose estimator ([diabot/lib/cgm/glucose_estimator.dart](diabot/lib/cgm/glucose_estimator.dart)) that compensates part of the sensor's interstitial lag. The chart always shows the sensor's raw reading and this estimate side by side with a color-coded confidence indicator, plus a dashed +5/+10/+15-minute forecast extrapolated from the filter's own state — not a diagnostic prediction, and never hiding either number.
 
 ### Deliberate limits
 
