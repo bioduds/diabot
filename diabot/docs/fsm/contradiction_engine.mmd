@@ -1,0 +1,15 @@
+%% fsm-contract: {"inputs":["EvidenceSet","SensorReliability","ClinicalHypothesis list"],"outputs":["ContradictionReport"],"conflictPatterns":["sensorHighStrongSymptoms","kalmanMuchLowerAcceleratingDrop","sensorNormalWithSymptoms"],"globalStateChange":false,"lifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"medicalReasoning":true}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  EVIDENCE[EvidenceSet] --> DETECT[ContradictionEngine.detect]
+  RELIABILITY[SensorReliability] --> DETECT
+  HYPOTHESES[Ranked ClinicalHypothesis list] --> DETECT
+  DETECT --> P1{Sensor high plus strong hypo symptoms?}
+  DETECT --> P2{Kalman much lower plus accelerating drop?}
+  DETECT --> P3{Sensor normal plus symptoms reported?}
+  P1 --> REPORT[ContradictionReport: flagged conflicts and rationale]
+  P2 --> REPORT
+  P3 --> REPORT
+  REPORT --> CONFIDENCE[ConfidenceEngine]
+
+  NOTE[ContradictionEngine only flags disagreement between sensor data, Kalman estimate, and reported symptoms. It resolves nothing itself and issues no treatment guidance; resolution is the Confidence Engine and Response Builder's job, always phrased as evidence, never as diagnosis.]

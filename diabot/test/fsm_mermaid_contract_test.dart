@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:diabai/cgm/past_event_interpreter.dart';
+import 'package:diabai/engines/hypothesis_engine.dart';
+import 'package:diabai/engines/physiological_state_engine.dart';
 import 'package:diabai/events.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -170,6 +172,8 @@ void main() {
         strings(contract, 'eventTypes'), names(FsmContract.temporalEventTypes));
     expect(strings(contract, 'consumers'), FsmContract.temporalConsumers);
     expect(contract['timestamp'], FsmContract.temporalTimestamp);
+    expect(strings(contract, 'timeSinceSignals'),
+        FsmContract.temporalTimeSinceSignals);
     expect(contract['globalStateChange'],
         FsmContract.timeEngineChangesGlobalState);
     expect(contract['lifecycleChange'], FsmContract.timeEngineChangesLifecycle);
@@ -273,5 +277,149 @@ void main() {
         FsmContract.pastEventInterpreterPriorityImpact);
     expect(contract['medicalReasoning'],
         FsmContract.pastEventInterpreterDoesMedicalReasoning);
+  });
+
+  test('Evidence Fusion Engine Mermaid contract stays organize-only', () {
+    final contract = readMermaidContract('$docs/evidence_fusion_engine.mmd');
+
+    expect(strings(contract, 'inputs'), FsmContract.evidenceFusionInputs);
+    expect(strings(contract, 'outputs'), FsmContract.evidenceFusionOutputs);
+    expect(strings(contract, 'evidenceCategories'), FsmContract.evidenceCategories);
+    expect(contract['globalStateChange'],
+        FsmContract.evidenceFusionChangesGlobalState);
+    expect(contract['lifecycleChange'],
+        FsmContract.evidenceFusionChangesLifecycle);
+    expect(contract['emergencyImpact'], FsmContract.evidenceFusionEmergencyImpact);
+    expect(contract['priorityImpact'], FsmContract.evidenceFusionPriorityImpact);
+    expect(contract['medicalReasoning'],
+        FsmContract.evidenceFusionDoesMedicalReasoning);
+  });
+
+  test('Sensor Reliability Engine Mermaid contract judges data, not the patient', () {
+    final contract = readMermaidContract('$docs/sensor_reliability_engine.mmd');
+
+    expect(strings(contract, 'inputs'), FsmContract.sensorReliabilityInputs);
+    expect(strings(contract, 'outputs'), FsmContract.sensorReliabilityOutputs);
+    expect(strings(contract, 'reliabilityFactors'),
+        FsmContract.sensorReliabilityFactors);
+    expect(contract['globalStateChange'],
+        FsmContract.sensorReliabilityChangesGlobalState);
+    expect(contract['lifecycleChange'],
+        FsmContract.sensorReliabilityChangesLifecycle);
+    expect(contract['emergencyImpact'],
+        FsmContract.sensorReliabilityEmergencyImpact);
+    expect(contract['priorityImpact'],
+        FsmContract.sensorReliabilityPriorityImpact);
+    expect(contract['medicalReasoning'],
+        FsmContract.sensorReliabilityDoesMedicalReasoning);
+  });
+
+  test('Hypothesis Engine Mermaid contract is the single hypothesis generator', () {
+    final contract = readMermaidContract('$docs/hypothesis_engine.mmd');
+
+    expect(strings(contract, 'inputs'), FsmContract.hypothesisEngineInputs);
+    expect(strings(contract, 'outputs'), FsmContract.hypothesisEngineOutputs);
+    expect(strings(contract, 'hypothesisTypes'),
+        names(ClinicalHypothesisType.values));
+    expect(strings(contract, 'hypothesisTypes'), FsmContract.hypothesisEngineTypes);
+    expect(strings(contract, 'consumers'), FsmContract.hypothesisEngineConsumers);
+    expect(contract['globalStateChange'],
+        FsmContract.hypothesisEngineChangesGlobalState);
+    expect(contract['lifecycleChange'],
+        FsmContract.hypothesisEngineChangesLifecycle);
+    expect(contract['emergencyImpact'], FsmContract.hypothesisEngineEmergencyImpact);
+    expect(contract['priorityImpact'], FsmContract.hypothesisEnginePriorityImpact);
+    expect(contract['medicalReasoning'],
+        FsmContract.hypothesisEngineDoesMedicalReasoning);
+  });
+
+  test('Contradiction Engine Mermaid contract only flags disagreement', () {
+    final contract = readMermaidContract('$docs/contradiction_engine.mmd');
+
+    expect(strings(contract, 'inputs'), FsmContract.contradictionEngineInputs);
+    expect(strings(contract, 'outputs'), FsmContract.contradictionEngineOutputs);
+    expect(strings(contract, 'conflictPatterns'),
+        FsmContract.contradictionConflictPatterns);
+    expect(contract['globalStateChange'],
+        FsmContract.contradictionEngineChangesGlobalState);
+    expect(contract['lifecycleChange'],
+        FsmContract.contradictionEngineChangesLifecycle);
+    expect(contract['emergencyImpact'],
+        FsmContract.contradictionEngineEmergencyImpact);
+    expect(contract['priorityImpact'],
+        FsmContract.contradictionEnginePriorityImpact);
+    expect(contract['medicalReasoning'],
+        FsmContract.contradictionEngineDoesMedicalReasoning);
+  });
+
+  test('Confidence Engine Mermaid contract never turns a hypothesis into a fact', () {
+    final contract = readMermaidContract('$docs/confidence_engine.mmd');
+
+    expect(strings(contract, 'inputs'), FsmContract.confidenceEngineInputs);
+    expect(strings(contract, 'outputs'), FsmContract.confidenceEngineOutputs);
+    expect(strings(contract, 'confidenceTiers'), FsmContract.confidenceTiers);
+    expect(contract['globalStateChange'],
+        FsmContract.confidenceEngineChangesGlobalState);
+    expect(contract['lifecycleChange'],
+        FsmContract.confidenceEngineChangesLifecycle);
+    expect(contract['emergencyImpact'], FsmContract.confidenceEngineEmergencyImpact);
+    expect(contract['priorityImpact'], FsmContract.confidenceEnginePriorityImpact);
+    expect(contract['medicalReasoning'],
+        FsmContract.confidenceEngineDoesMedicalReasoning);
+  });
+
+  test('Physiological State Engine Mermaid contract recomputes in-memory only', () {
+    final contract = readMermaidContract('$docs/physiological_state_engine.mmd');
+
+    expect(strings(contract, 'inputs'), FsmContract.physiologicalStateInputs);
+    expect(strings(contract, 'outputs'), FsmContract.physiologicalStateOutputs);
+    expect(strings(contract, 'phases'), names(PhysiologicalPhase.values));
+    expect(strings(contract, 'phases'), FsmContract.physiologicalPhases);
+    expect(contract['persistence'], FsmContract.physiologicalStatePersistence);
+    expect(contract['globalStateChange'],
+        FsmContract.physiologicalStateChangesGlobalState);
+    expect(contract['lifecycleChange'],
+        FsmContract.physiologicalStateChangesLifecycle);
+    expect(contract['emergencyImpact'],
+        FsmContract.physiologicalStateEmergencyImpact);
+    expect(contract['priorityImpact'],
+        FsmContract.physiologicalStatePriorityImpact);
+    expect(contract['medicalReasoning'],
+        FsmContract.physiologicalStateDoesMedicalReasoning);
+  });
+
+  test('Clinical Reasoning Layer Mermaid contract owns all clinical judgment', () {
+    final contract = readMermaidContract('$docs/clinical_reasoning_layer.mmd');
+
+    expect(strings(contract, 'inputs'), FsmContract.clinicalReasoningInputs);
+    expect(strings(contract, 'outputs'), FsmContract.clinicalReasoningOutputs);
+    expect(strings(contract, 'pipeline'), FsmContract.clinicalReasoningPipeline);
+    expect(strings(contract, 'consumers'), FsmContract.clinicalReasoningConsumers);
+    expect(contract['safetyBoundary'], FsmContract.clinicalSafetyBoundary);
+    expect(contract['globalStateChange'],
+        FsmContract.clinicalReasoningChangesGlobalState);
+    expect(contract['lifecycleChange'],
+        FsmContract.clinicalReasoningChangesLifecycle);
+    expect(contract['emergencyImpact'],
+        FsmContract.clinicalReasoningEmergencyImpact);
+    expect(contract['priorityImpact'], FsmContract.clinicalReasoningPriorityImpact);
+    expect(contract['medicalReasoning'],
+        FsmContract.clinicalReasoningDoesMedicalReasoning);
+  });
+
+  test('Response Builder Mermaid contract never prescribes treatment', () {
+    final contract = readMermaidContract('$docs/response_builder.mmd');
+
+    expect(strings(contract, 'inputs'), FsmContract.responseBuilderInputs);
+    expect(strings(contract, 'outputs'), FsmContract.responseBuilderOutputs);
+    expect(strings(contract, 'confidenceTones'),
+        FsmContract.responseBuilderConfidenceTones);
+    expect(contract['safetyBoundary'], FsmContract.clinicalSafetyBoundary);
+    expect(contract['globalStateChange'],
+        FsmContract.responseBuilderChangesGlobalState);
+    expect(contract['lifecycleChange'],
+        FsmContract.responseBuilderChangesLifecycle);
+    expect(contract['medicalReasoning'],
+        FsmContract.responseBuilderDoesMedicalReasoning);
   });
 }

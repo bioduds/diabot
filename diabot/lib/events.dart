@@ -1,5 +1,8 @@
 import 'dart:convert';
 
+import 'cgm/glucose_estimator.dart';
+import 'engines/clinical_reasoning_layer.dart';
+
 /// What actually happened, per the user's own architectural rule: "There
 /// are no meal states, glucose states or insulin states. There are only
 /// events and missing pieces of information." This is the full universe of
@@ -208,6 +211,7 @@ class FsmContract {
     'education',
     'cgm',
     'timeline',
+    'clinical-clarification',
   ];
   static const moduleIdentity = 'canonical-event-type-or-support-id';
   static const moduleTitleSource = 'localized-module-catalog';
@@ -241,6 +245,154 @@ class FsmContract {
   static const pastEventInterpreterDoesMedicalReasoning = false;
   static const modulesChangeGlobalState = false;
   static const modulesChangeLifecycle = false;
+
+  // Clinical Reasoning Layer (V2, docs/fsm/clinical_reasoning_layer.mmd and
+  // its six sub-engine contracts): the only place clinical judgment lives.
+  // ConversationOrchestrator and EmergencyEngine never compute clinical
+  // judgments themselves; they only consume ClinicalAssessment.
+  static const clinicalSafetyBoundary = 'descriptive-never-prescriptive';
+
+  static const evidenceFusionInputs = [
+    'glucoseEstimate',
+    'referenceTime',
+    'eventStack',
+    'temporalContext',
+    'previousEstimate',
+  ];
+  static const evidenceFusionOutputs = ['EvidenceSet'];
+  static const evidenceCategories = [
+    'glucose',
+    'trend',
+    'symptom',
+    'insulin',
+    'exercise',
+    'meal',
+  ];
+  static const evidenceFusionChangesGlobalState = false;
+  static const evidenceFusionChangesLifecycle = false;
+  static const evidenceFusionEmergencyImpact = false;
+  static const evidenceFusionPriorityImpact = false;
+  static const evidenceFusionDoesMedicalReasoning = false;
+
+  static const sensorReliabilityInputs = ['EvidenceSet'];
+  static const sensorReliabilityOutputs = ['SensorReliability'];
+  static const sensorReliabilityFactors = [
+    'residual',
+    'kalmanConfidence',
+    'velocity',
+    'symptomMismatch',
+  ];
+  static const sensorReliabilityChangesGlobalState = false;
+  static const sensorReliabilityChangesLifecycle = false;
+  static const sensorReliabilityEmergencyImpact = false;
+  static const sensorReliabilityPriorityImpact = false;
+  static const sensorReliabilityDoesMedicalReasoning = false;
+
+  static const hypothesisEngineInputs = ['EvidenceSet', 'SensorReliability'];
+  static const hypothesisEngineOutputs = [
+    'ClinicalHypothesis list, ordered by probability',
+  ];
+  static const hypothesisEngineTypes = [
+    'trueHypoglycemia',
+    'trueHyperglycemia',
+    'sensorLag',
+    'compressionArtifact',
+    'sensorError',
+    'meal',
+    'insulin',
+    'exercise',
+    'dawnPhenomenon',
+    'stress',
+  ];
+  static const hypothesisEngineConsumers = [
+    'nuno',
+    'pastEventInterpreter',
+    'clinicalReasoningLayer',
+  ];
+  static const hypothesisEngineChangesGlobalState = false;
+  static const hypothesisEngineChangesLifecycle = false;
+  static const hypothesisEngineEmergencyImpact = false;
+  static const hypothesisEnginePriorityImpact = false;
+  static const hypothesisEngineDoesMedicalReasoning = true;
+
+  static const contradictionEngineInputs = [
+    'EvidenceSet',
+    'SensorReliability',
+    'ClinicalHypothesis list',
+  ];
+  static const contradictionEngineOutputs = ['ContradictionReport'];
+  static const contradictionConflictPatterns = [
+    'sensorHighStrongSymptoms',
+    'kalmanMuchLowerAcceleratingDrop',
+    'sensorNormalWithSymptoms',
+  ];
+  static const contradictionEngineChangesGlobalState = false;
+  static const contradictionEngineChangesLifecycle = false;
+  static const contradictionEngineEmergencyImpact = false;
+  static const contradictionEnginePriorityImpact = false;
+  static const contradictionEngineDoesMedicalReasoning = true;
+
+  static const confidenceEngineInputs = [
+    'ClinicalHypothesis list',
+    'SensorReliability',
+    'ContradictionReport',
+  ];
+  static const confidenceEngineOutputs = ['AssessmentConfidence'];
+  static const confidenceTiers = ['alta', 'media', 'baixa'];
+  static const confidenceEngineChangesGlobalState = false;
+  static const confidenceEngineChangesLifecycle = false;
+  static const confidenceEngineEmergencyImpact = false;
+  static const confidenceEnginePriorityImpact = false;
+  static const confidenceEngineDoesMedicalReasoning = true;
+
+  static const physiologicalStateInputs = [
+    'EvidenceSet',
+    'ClinicalHypothesis history',
+  ];
+  static const physiologicalStateOutputs = ['PhysiologicalPhase'];
+  static const physiologicalPhases = [
+    'absorbingCarbs',
+    'insulinDominant',
+    'acceleratingDrop',
+    'hypoRisk',
+    'recovering',
+    'stabilizing',
+  ];
+  static const physiologicalStatePersistence = 'in-memory-per-assessment';
+  static const physiologicalStateChangesGlobalState = false;
+  static const physiologicalStateChangesLifecycle = false;
+  static const physiologicalStateEmergencyImpact = false;
+  static const physiologicalStatePriorityImpact = false;
+  static const physiologicalStateDoesMedicalReasoning = true;
+
+  static const clinicalReasoningInputs = [
+    'GlucoseEstimate',
+    'EventStack',
+    'TemporalContext',
+    'ProfileContext',
+  ];
+  static const clinicalReasoningOutputs = ['ClinicalAssessment'];
+  static const clinicalReasoningPipeline = [
+    'evidenceFusion',
+    'sensorReliability',
+    'hypothesis',
+    'contradiction',
+    'confidence',
+    'physiologicalState',
+  ];
+  static const clinicalReasoningConsumers = ['emergencyEngine', 'responseBuilder'];
+  static const clinicalReasoningChangesGlobalState = false;
+  static const clinicalReasoningChangesLifecycle = false;
+  static const clinicalReasoningEmergencyImpact = false;
+  static const clinicalReasoningPriorityImpact = false;
+  static const clinicalReasoningDoesMedicalReasoning = true;
+
+  static const responseBuilderInputs = ['ClinicalAssessment'];
+  static const responseBuilderOutputs = ['response text'];
+  static const responseBuilderConfidenceTones = ['alta', 'media', 'baixa'];
+  static const responseBuilderChangesGlobalState = false;
+  static const responseBuilderChangesLifecycle = false;
+  static const responseBuilderDoesMedicalReasoning = false;
 
   static const mealFields = [
     'mealStatus',
@@ -290,6 +442,18 @@ class FsmContract {
   static const temporalTimestamp = 'createdAt';
   static const timeEngineChangesGlobalState = false;
   static const timeEngineChangesLifecycle = false;
+
+  // Clinical Reasoning Layer inputs (docs/fsm/time_engine.mmd): elapsed
+  // time since the most recent event of each kind, within temporalWindows'
+  // 24h horizon. Consumed by EvidenceFusionEngine as a v1 IOB/COB proxy —
+  // see Further Considerations #1 in the V2 plan.
+  static const temporalTimeSinceSignals = [
+    'meal',
+    'bolus',
+    'basal',
+    'exercise',
+    'symptoms',
+  ];
 
   static const profileFields = [
     'name',
@@ -479,6 +643,9 @@ class EventInstance {
     Map<String, dynamic>? data,
     DateTime? createdAt,
     this.source = EventSource.userText,
+    this.confidence = 1.0,
+    this.derived = false,
+    this.validated = true,
     String? id,
   })  : data = data ?? <String, dynamic>{},
         createdAt = createdAt ?? DateTime.now(),
@@ -494,6 +661,21 @@ class EventInstance {
   final Map<String, dynamic> data;
   final DateTime createdAt;
   final EventSource source;
+
+  /// How certain the kernel is in this event's data, 0..1. User-entered and
+  /// device (CGM) readings default to 1.0 (evidence, not doubt); a future
+  /// derived/computed event (e.g. a persisted clinical estimate) would set
+  /// this below 1.0 to carry that uncertainty into storage.
+  final double confidence;
+
+  /// Whether this event was computed by an engine rather than reported by
+  /// the user or a device. False for every event type stored today.
+  final bool derived;
+
+  /// Whether this event's data has passed the FSM's normal validation path
+  /// (e.g. a completed field-collection flow). True for every event type
+  /// stored today; reserved for a future partially-collected/derived event.
+  final bool validated;
   EventStatus status = EventStatus.queued;
   String? statusReason;
 
@@ -542,6 +724,14 @@ abstract interface class TemporalContext {
     Object value,
     Duration within,
   );
+
+  /// Elapsed time since the most recent event of this kind, or null if none
+  /// occurred within the horizon already fetched by [TimeEngine.buildContext].
+  Duration? get timeSinceMeal;
+  Duration? get timeSinceBolus;
+  Duration? get timeSinceBasal;
+  Duration? get timeSinceExercise;
+  Duration? get timeSinceSymptoms;
 }
 
 /// Builds a [TemporalContext] once per FSM turn without coupling engines to
@@ -1027,12 +1217,21 @@ class EmergencyAssessment {
     required this.reason,
     required this.severity,
     this.usedTemporalContext = false,
+    this.clinicalAssessment,
   });
 
   final bool isEmergency;
   final String reason;
   final double severity;
   final bool usedTemporalContext;
+
+  /// The same ClinicalAssessment this turn's corroboration check already
+  /// computed (null when no glucose was present to assess). Exposed so
+  /// callers such as ConversationOrchestrator/ResponseBuilder can reuse it
+  /// instead of invoking ClinicalReasoningLayer a second time per turn.
+  /// Purely descriptive — does not change [isEmergency]/[severity] beyond
+  /// what [EmergencyEngine] already folded in above.
+  final ClinicalAssessment? clinicalAssessment;
 
   static const none =
       EmergencyAssessment(isEmergency: false, reason: '', severity: 0);
@@ -1056,7 +1255,13 @@ class EmergencyEngine {
     'recentInsulin',
     'recentIntenseExercise',
     'hypoglycemiaUnawareness',
+    'clinicalContradiction',
   ];
+
+  /// Additive-only: a ClinicalReasoningLayer contradiction (e.g. a
+  /// "normal" reading with reported symptoms) only ever raises the score
+  /// above, never below what the signals above alone produce.
+  static const clinicalContradictionBonus = 0.25;
 
   final RecentEventReader? _history;
   final TemporalContextProvider? _temporalContextProvider;
@@ -1115,7 +1320,121 @@ class EmergencyEngine {
           profileContext?.value('hypoglycemiaUnawareness') == true &&
               profileContext!.confidence('hypoglycemiaUnawareness') >= 0.5,
     );
-    return _score(context, usedTemporalContext: temporalContext != null);
+    final baseline = _score(context, usedTemporalContext: temporalContext != null);
+    return await _withClinicalCorroboration(
+      baseline,
+      glucose: glucose,
+      stack: stack,
+      temporalContext: temporalContext,
+      profileContext: profileContext,
+    );
+  }
+
+  /// How far back to look for prior `glucose` events when reconstructing a
+  /// real Kalman series for the current reading — long enough for velocity
+  /// to be meaningful, short enough to stay cheap per turn.
+  static const glucoseHistoryWindow = Duration(hours: 3);
+
+  /// Replays recent stored `glucose` events (oldest first) through a fresh
+  /// [GlucoseEstimator], then feeds [glucose] itself as the final reading —
+  /// the same reconstruction technique [GlucoseChartPage] already uses for
+  /// its chart. Produces a real velocity/residual/confidence instead of the
+  /// zero-velocity/full-confidence placeholder Phase 6 used, without
+  /// requiring a live, persistent estimator instance. With no history (or
+  /// no [_history] reader at all, e.g. most unit tests), this degrades to
+  /// exactly one reading — identical in shape (`estimatedNow == glucose`,
+  /// `velocity == 0`, `residual == 0`) to the old synthetic estimate, just
+  /// with a genuine (not hardcoded) confidence/sigma. Also returns the
+  /// last historical estimate/timestamp (if any) so the caller can pass a
+  /// real `previousEstimate`/`previousAt` into `ClinicalReasoningLayer`,
+  /// letting `EvidenceFusionEngine` compute genuine acceleration too.
+  Future<
+      ({
+        GlucoseEstimate estimate,
+        GlucoseEstimate? previousEstimate,
+        DateTime? previousAt,
+      })> _buildRealEstimate(double glucose, DateTime at) async {
+    final history = _history;
+    final rows = history == null
+        ? const <Map<String, dynamic>>[]
+        : await history.recentEventsOfType('glucose', glucoseHistoryWindow);
+
+    final readings = <MapEntry<DateTime, double>>[];
+    for (final row in rows) {
+      final payload =
+          jsonDecode(row['payload'] as String) as Map<String, dynamic>;
+      final value = asDouble(payload['value']);
+      final createdAt = DateTime.tryParse(row['created_at'] as String);
+      if (value != null && createdAt != null) {
+        readings.add(MapEntry(createdAt, value));
+      }
+    }
+    readings.sort((a, b) => a.key.compareTo(b.key));
+
+    final estimator = GlucoseEstimator();
+    GlucoseEstimate? previousEstimate;
+    DateTime? previousAt;
+    for (final reading in readings) {
+      previousEstimate = estimator.addReading(reading.value, reading.key);
+      previousAt = reading.key;
+    }
+    final estimate = estimator.addReading(glucose, at);
+    return (
+      estimate: estimate,
+      previousEstimate: previousEstimate,
+      previousAt: previousAt,
+    );
+  }
+
+  /// Folds in ClinicalReasoningLayer's ContradictionEngine as a purely
+  /// additive signal the band/symptom score above cannot see on its own —
+  /// e.g. a "normal" reading with reported symptoms. Never lowers
+  /// [baseline]'s score, so it can only ever surface emergencies the
+  /// pre-Phase-6 formula missed, never suppress ones it already caught
+  /// (see test/emergency_engine_regression_test.dart).
+  Future<EmergencyAssessment> _withClinicalCorroboration(
+    EmergencyAssessment baseline, {
+    required double? glucose,
+    required List<EventInstance> stack,
+    required TemporalContext? temporalContext,
+    required ProfileContext? profileContext,
+  }) async {
+    if (glucose == null) return baseline;
+
+    final at = DateTime.now();
+    final built = await _buildRealEstimate(glucose, at);
+    final clinical = ClinicalReasoningLayer.assess(
+      estimate: built.estimate,
+      at: at,
+      stack: stack,
+      temporalContext: temporalContext,
+      profileContext: profileContext,
+      previousEstimate: built.previousEstimate,
+      previousAt: built.previousAt,
+    );
+    if (!clinical.contradictions.hasContradiction) {
+      return EmergencyAssessment(
+        isEmergency: baseline.isEmergency,
+        reason: baseline.reason,
+        severity: baseline.severity,
+        usedTemporalContext: baseline.usedTemporalContext,
+        clinicalAssessment: clinical,
+      );
+    }
+
+    final combinedScore =
+        (baseline.severity + clinicalContradictionBonus).clamp(0.0, 1.0);
+    final reasons = [
+      if (baseline.reason.isNotEmpty) baseline.reason,
+      'divergência entre a leitura do sensor e os sintomas relatados',
+    ];
+    return EmergencyAssessment(
+      isEmergency: combinedScore >= scoreThreshold,
+      reason: reasons.join(', '),
+      severity: combinedScore,
+      usedTemporalContext: baseline.usedTemporalContext,
+      clinicalAssessment: clinical,
+    );
   }
 
   EmergencyAssessment _score(

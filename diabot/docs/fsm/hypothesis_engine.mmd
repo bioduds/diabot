@@ -1,0 +1,14 @@
+%% fsm-contract: {"inputs":["EvidenceSet","SensorReliability"],"outputs":["ClinicalHypothesis list, ordered by probability"],"hypothesisTypes":["trueHypoglycemia","trueHyperglycemia","sensorLag","compressionArtifact","sensorError","meal","insulin","exercise","dawnPhenomenon","stress"],"consumers":["nuno","pastEventInterpreter","clinicalReasoningLayer"],"globalStateChange":false,"lifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"medicalReasoning":true}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  EVIDENCE[EvidenceSet] --> GENERATE[HypothesisEngine.generate]
+  RELIABILITY[SensorReliability] --> GENERATE
+  GENERATE --> STATE_HYP[State hypotheses: trueHypoglycemia, trueHyperglycemia, sensorLag, compressionArtifact, sensorError]
+  GENERATE --> ATTRIBUTION_HYP[Attribution hypotheses: meal, insulin, exercise, dawnPhenomenon, stress]
+  STATE_HYP --> RANKED[Ranked ClinicalHypothesis list, most probable first]
+  ATTRIBUTION_HYP --> RANKED
+  RANKED --> CONTRADICTION[ContradictionEngine]
+  RANKED --> CONFIDENCE[ConfidenceEngine]
+  RANKED --> PASTEVENT[PastEventInterpreter: reuses this classification per historical sample, keeps its own windowing/suppression/Timeline mapping]
+
+  NOTE[HypothesisEngine is the single hypothesis generator in DiabAI. It replaces the classification math that used to live only inside PastEventInterpreter, which now calls this engine instead of duplicating it. HypothesisEngine only ranks candidate explanations by probability; it never stores an event, never talks to the user, and has no Emergency/Priority Engine impact of its own until ClinicalReasoningLayer/EmergencyEngine are wired to consume it.]

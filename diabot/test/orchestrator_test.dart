@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:diabai/events.dart';
@@ -9,6 +10,19 @@ import 'package:diabai/time_engine.dart';
 import 'package:diabai/user_profile.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+class _FakeGlucoseHistory implements RecentEventReader {
+  _FakeGlucoseHistory(this._rows);
+
+  final List<Map<String, dynamic>> _rows;
+
+  @override
+  Future<List<Map<String, dynamic>>> recentEventsOfType(
+    String type,
+    Duration within,
+  ) async =>
+      type == 'glucose' ? _rows : const [];
+}
 
 class _MemoryGateway implements FsmStoreGateway {
   final events = <EventInstance>[];
@@ -401,5 +415,72 @@ void main() {
         expect(() => GuidedModuleCatalog.byId(id), returnsNormally);
       });
     }
+  });
+
+  group('ResponseBuilder clinical clarification integration', () {
+    Future<OrchestratorReply> completeGlucose(
+      ConversationOrchestrator orchestrator,
+      String value,
+    ) async {
+      await orchestrator.respond(value, null);
+      await orchestrator.respond('Não', null);
+      await orchestrator.respond('Aleatória', null);
+      return orchestrator.respond('Continuar sem contexto', null);
+    }
+
+    /// Real Kalman-driven confidence (Phase 7.5) needs a warmed-up glucose
+    /// history — a bare cold-start reading is genuinely low-confidence (see
+    /// test/emergency_engine_real_estimate_test.dart) and would land on the
+    /// sensorError hypothesis instead of the scenario under test here.
+    ConversationOrchestrator orchestratorWithGlucoseHistory(
+      List<double> values,
+    ) {
+      final now = DateTime.now();
+      final anchor = now.subtract(const Duration(minutes: 5));
+      final rows = [
+        for (var i = 0; i < values.length; i++)
+          {
+            'created_at': anchor
+                .subtract(Duration(minutes: (values.length - 1 - i) * 5))
+                .toIso8601String(),
+            'payload': jsonEncode({'value': values[i]}),
+          },
+      ];
+      return ConversationOrchestrator(
+        emergencyEngine: EmergencyEngine(
+          history: _FakeGlucoseHistory(rows),
+        ),
+      );
+    }
+
+    test(
+        'a smooth declining glucose history gets a descriptive alta-tier '
+        'note with no clarifying question', () async {
+      // Stays within the 55-70 mg/dL band (not <55) so the classic
+      // band/symptom score alone doesn't also trigger the emergency gate —
+      // isolates the ResponseBuilder note from the emergency escalation
+      // flow, which is covered separately by emergency_engine_regression_test.dart.
+      final orchestrator = orchestratorWithGlucoseHistory(
+        [240, 225, 210, 195, 180, 165, 150, 135, 120, 105, 90, 75],
+      );
+
+      final reply = await completeGlucose(orchestrator, '60');
+
+      expect(reply.text, contains('Isso parece ser uma hipoglicemia'));
+      expect(reply.guidedModuleId, isNot('clinical-clarification'));
+    });
+
+    test('a stable, normal glucose history gets the fixed "nothing unusual" note',
+        () async {
+      final orchestrator = orchestratorWithGlucoseHistory(List.filled(11, 150.0));
+
+      final reply = await completeGlucose(orchestrator, '150');
+
+      expect(
+        reply.text,
+        contains('Não notei nada fora do esperado nesta leitura'),
+      );
+      expect(reply.guidedModuleId, isNot('clinical-clarification'));
+    });
   });
 }

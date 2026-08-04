@@ -14,6 +14,7 @@
     "module.education.title": "Dúvida",
     "module.cgm.title": "Sensor CGM",
     "module.timeline.title": "Linha do tempo",
+    "module.clinicalClarification.title": "Confirmação clínica",
     "guided.exit": "Sair",
     "guided.inputHint": "Digite sua resposta",
     "guided.submitTooltip": "Enviar resposta"

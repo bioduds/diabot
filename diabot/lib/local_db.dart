@@ -35,14 +35,18 @@ class LocalDatabase
     final path = p.join(dir.path, 'diabai.db');
     final db = await openDatabase(
       path,
-      version: 4,
+      version: 5,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT NOT NULL,
             payload TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'userText',
+            confidence REAL NOT NULL DEFAULT 1.0,
+            derived INTEGER NOT NULL DEFAULT 0,
+            validated INTEGER NOT NULL DEFAULT 1
           )
         ''');
         await db.execute('''
@@ -121,6 +125,27 @@ class LocalDatabase
             )
           ''');
         }
+        if (oldVersion < 5) {
+          await db.execute(
+            "ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'userText'",
+          );
+          await db.execute(
+            'ALTER TABLE events ADD COLUMN confidence REAL NOT NULL DEFAULT 1.0',
+          );
+          await db.execute(
+            'ALTER TABLE events ADD COLUMN derived INTEGER NOT NULL DEFAULT 0',
+          );
+          await db.execute(
+            'ALTER TABLE events ADD COLUMN validated INTEGER NOT NULL DEFAULT 1',
+          );
+          // Backfill the new `source` column for CGM readings synced before
+          // this migration, whose source previously lived only inside the
+          // JSON payload -- keeps deleteCgmGlucoseReadingsInWindow's dedup
+          // working for already-stored data.
+          await db.execute(
+            "UPDATE events SET source = 'cgm' WHERE payload LIKE '%\"_source\":\"cgm\"%'",
+          );
+        }
       },
     );
     _db = db;
@@ -136,12 +161,20 @@ class LocalDatabase
     String type,
     Map<String, dynamic> fields, {
     DateTime? occurredAt,
+    EventSource source = EventSource.userText,
+    double confidence = 1.0,
+    bool derived = false,
+    bool validated = true,
   }) async {
     final db = await _open();
     await db.insert('events', {
       'type': type,
       'payload': jsonEncode(fields),
       'created_at': (occurredAt ?? DateTime.now()).toIso8601String(),
+      'source': source.name,
+      'confidence': confidence,
+      'derived': derived ? 1 : 0,
+      'validated': validated ? 1 : 0,
     });
   }
 
@@ -154,14 +187,21 @@ class LocalDatabase
             !entry.key.startsWith('_'))
           entry.key: entry.value,
       '_event_id': event.id,
-      '_source': event.source.name,
     };
-    await logEvent(event.type.name, fields, occurredAt: event.createdAt);
+    await logEvent(
+      event.type.name,
+      fields,
+      occurredAt: event.createdAt,
+      source: event.source,
+      confidence: event.confidence,
+      derived: event.derived,
+      validated: event.validated,
+    );
   }
 
   @override
   Future<void> storeSystemEvent(String type, Map<String, dynamic> data) =>
-      logEvent(type, data);
+      logEvent(type, data, source: EventSource.system);
 
   @override
   Future<void> recordTransition(KernelTransition transition) async {
@@ -233,12 +273,12 @@ class LocalDatabase
     await db.delete(
       'events',
       where:
-          'type = ? AND created_at >= ? AND created_at <= ? AND payload LIKE ?',
+          'type = ? AND created_at >= ? AND created_at <= ? AND source = ?',
       whereArgs: [
         'glucose',
         start.toIso8601String(),
         end.toIso8601String(),
-        '%"_source":"cgm"%',
+        EventSource.cgm.name,
       ],
     );
   }

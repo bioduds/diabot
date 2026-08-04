@@ -1,0 +1,14 @@
+%% fsm-contract: {"inputs":["ClinicalAssessment"],"outputs":["response text"],"confidenceTones":["alta","media","baixa"],"safetyBoundary":"descriptive-never-prescriptive","globalStateChange":false,"lifecycleChange":false,"medicalReasoning":false}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  ASSESSMENT[ClinicalAssessment] --> BUILD[ResponseBuilder.build]
+  BUILD --> TONE{Confidence tier}
+  TONE -->|alta| STRONG[Strong-evidence tone: assertive but not diagnostic]
+  TONE -->|media| MODERATE[Moderate tone: suggestive]
+  TONE -->|baixa| SOFT[Soft tone: tentative, always paired with a clarifying question]
+  STRONG --> TEXT[OrchestratorReply.text]
+  MODERATE --> TEXT
+  SOFT --> TEXT
+  SOFT --> QUESTION[Adaptive clarifying question, module clinical-clarification]
+
+  NOTE[ResponseBuilder only renders ClinicalAssessment into text and, when confidence is not high, into a clarifying question. It never invents new clinical judgments, never proposes a dose or treatment, and creates no DiabAIGlobalState or EventStatus transition of its own.]

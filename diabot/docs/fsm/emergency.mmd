@@ -1,4 +1,4 @@
-%% fsm-contract: {"precedence":"emergency-before-priority","signals":["glucose","symptomType","recentInsulin","recentIntenseExercise","hypoglycemiaUnawareness"],"threshold":0.6,"resume":"preserve-event-stack"}
+%% fsm-contract: {"precedence":"emergency-before-priority","signals":["glucose","symptomType","recentInsulin","recentIntenseExercise","hypoglycemiaUnawareness","clinicalContradiction"],"threshold":0.6,"resume":"preserve-event-stack"}
 %% This contract is checked by test/fsm_mermaid_contract_test.dart.
 flowchart LR
   STACK[Event stack] --> ASSESS[EmergencyEngine assess]
@@ -8,9 +8,12 @@ flowchart LR
   INSULIN[Recent insulin] --> ASSESS
   EXERCISE[Recent intense exercise] --> ASSESS
   UNAWARE[Hypoglycemia unawareness] --> ASSESS
+  CLINICAL[ClinicalReasoningLayer contradiction: additive-only corroboration, never lowers the score] --> ASSESS
+  HISTORY[Recent stored glucose events, replayed oldest-first through a fresh GlucoseEstimator, then the current reading appended] --> CLINICAL
   ASSESS --> SCORE{Score at least 0.6}
   SCORE -->|yes| MARK[Mark pending events escalated]
   MARK --> EMERGENCY[Emergency protocol]
   EMERGENCY --> STORE[Store emergency system event]
   STORE --> RESUME[Resume preserved event stack]
   SCORE -->|no| PRIORITY[Priority engine]
+  ASSESS --> REUSE[EmergencyAssessment.clinicalAssessment: the same ClinicalAssessment exposed back to the caller, so ConversationOrchestrator/ResponseBuilder reuse it instead of a second ClinicalReasoningLayer call]

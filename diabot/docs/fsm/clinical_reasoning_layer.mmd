@@ -1,0 +1,19 @@
+%% fsm-contract: {"inputs":["GlucoseEstimate","EventStack","TemporalContext","ProfileContext"],"outputs":["ClinicalAssessment"],"pipeline":["evidenceFusion","sensorReliability","hypothesis","contradiction","confidence","physiologicalState"],"consumers":["emergencyEngine","responseBuilder"],"safetyBoundary":"descriptive-never-prescriptive","globalStateChange":false,"lifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"medicalReasoning":true}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  STACK[Event stack] --> ASSESS[ClinicalReasoningLayer.assess]
+  ESTIMATE[GlucoseEstimate] --> ASSESS
+  TEMPORAL[TemporalContext] --> ASSESS
+  PROFILE[ProfileContext] --> ASSESS
+  ASSESS --> FUSION[EvidenceFusionEngine]
+  FUSION --> RELIABILITY[SensorReliabilityEngine]
+  RELIABILITY --> HYPOTHESIS[HypothesisEngine]
+  HYPOTHESIS --> CONTRADICTION[ContradictionEngine]
+  CONTRADICTION --> CONFIDENCE[ConfidenceEngine]
+  HYPOTHESIS --> PHYSIOLOGICAL[PhysiologicalStateEngine]
+  CONFIDENCE --> OUTPUT[ClinicalAssessment: dominantHypothesis, confidence, evidence, contradictions, recommendations, questions]
+  PHYSIOLOGICAL --> OUTPUT
+  OUTPUT --> EMERGENCY[EmergencyEngine: consumes dominantHypothesis and confidence, still the sole gate to the emergency state]
+  OUTPUT --> RESPONSE[ResponseBuilder: renders text only]
+
+  NOTE[ClinicalReasoningLayer composes the engines above into one ClinicalAssessment per turn. Every recommendation/question it produces stays descriptive and clarifying, never a treatment, dosing, or diagnostic instruction. The FSM itself keeps deciding nothing clinical: this layer, not ConversationOrchestrator, owns all clinical judgment, per this repository's mandatory separation.]

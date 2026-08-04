@@ -1,9 +1,12 @@
 import 'dart:typed_data';
 
+import 'engines/clinical_reasoning_layer.dart';
+import 'engines/hypothesis_engine.dart';
 import 'events.dart';
 import 'initialization.dart';
 import 'nlu.dart';
 import 'profile_engine.dart';
+import 'response_builder.dart';
 import 'user_profile.dart';
 
 /// A single response from [ConversationOrchestrator]: fixed, human-authored
@@ -97,6 +100,19 @@ class ConversationOrchestrator {
   final Map<String, dynamic> _emergencyData = {};
   ProfileContext? _profileContext;
 
+  /// This turn's ClinicalAssessment, reused from [EmergencyEngine.assess]
+  /// (see docs/fsm/emergency.mmd's REUSE node) so ResponseBuilder never
+  /// triggers a second ClinicalReasoningLayer computation. Null whenever
+  /// no glucose was present to assess. Set once per [_resolveStack] call
+  /// and read by [_clinicalClarificationReply] later in the same turn's
+  /// stack-processing cascade.
+  ClinicalAssessment? _turnClinicalAssessment;
+
+  /// Set only while waiting for a yes/no answer to a clarifying question
+  /// ResponseBuilder just asked (module `clinical-clarification`), keyed
+  /// by the hypothesis type it was about — never a new DiabAIGlobalState.
+  ClinicalHypothesisType? _pendingClinicalClarification;
+
   DiabAIGlobalState get state => _state;
 
   /// Starts the first-login profile collection after the local model is
@@ -164,6 +180,10 @@ class ConversationOrchestrator {
         _eventStack.isNotEmpty) {
       final reply = await _tryFillContext(rawText);
       if (reply != null) return reply;
+    }
+
+    if (_pendingClinicalClarification != null) {
+      return _resolveClinicalClarification(rawText);
     }
 
     if (_pendingFieldKey != null && _eventStack.isNotEmpty) {
@@ -323,6 +343,7 @@ class ConversationOrchestrator {
       _eventStack,
       profileContext: _profileContext,
     );
+    _turnClinicalAssessment = assessment.clinicalAssessment;
     if (assessment.isEmergency) {
       await _markStackEscalated(assessment.reason);
       _state = DiabAIGlobalState.emergency;
@@ -419,6 +440,10 @@ class ConversationOrchestrator {
       _eventStack.removeAt(0);
       final message = eventCompletionMessages[active.type]?.call(active.data) ??
           'Registrado.';
+      if (active.type == EventType.glucose && _eventStack.isEmpty) {
+        final clarification = _clinicalClarificationReply(message);
+        if (clarification != null) return clarification;
+      }
       if (_eventStack.isEmpty) {
         return _idleReply(message: message, completed: active.type);
       }
@@ -439,6 +464,37 @@ class ConversationOrchestrator {
       numericInputHint: field.numericInputHint,
       guidedFieldKind: field.kind,
       guidedModuleId: active.type.name,
+    );
+  }
+
+  /// After a glucose event is stored AND it was the last pending event
+  /// this turn, appends ResponseBuilder's descriptive read of
+  /// [_turnClinicalAssessment] (see docs/fsm/response_builder.mmd) to
+  /// [message] and, only when confidence is low AND the dominant
+  /// hypothesis has an adaptive clarifying question, offers it through
+  /// the guided prompt bar (module `clinical-clarification`) instead of
+  /// the normal idle epilogue. Otherwise falls back to the normal
+  /// [_idleReply]. Returns null when there is nothing clinical to say
+  /// (no assessment was computed this turn).
+  OrchestratorReply? _clinicalClarificationReply(String message) {
+    final assessment = _turnClinicalAssessment;
+    if (assessment == null) return null;
+
+    final descriptive = ResponseBuilder.build(assessment);
+    final combined = '$message\n\n$descriptive';
+    final dominant = assessment.dominantHypothesis;
+    final question = assessment.confidence.tier == 'baixa' && dominant != null
+        ? ResponseBuilder.clarifyingQuestion(dominant.type)
+        : null;
+    if (question == null) {
+      return _idleReply(message: combined, completed: EventType.glucose);
+    }
+    _pendingClinicalClarification = dominant!.type;
+    return OrchestratorReply(
+      combined,
+      quickReplies: const ['Sim', 'Não'],
+      guidedFieldKind: FieldKind.yesNo,
+      guidedModuleId: 'clinical-clarification',
     );
   }
 
@@ -565,6 +621,39 @@ class ConversationOrchestrator {
     }
     buffer.write('Isso não substitui orientação médica profissional.');
     return buffer.toString();
+  }
+
+  /// Resolves the yes/no answer to the clarifying question
+  /// [_clinicalClarificationReply] asked. Purely descriptive: a
+  /// confirmed true hypo/hyperglycemia is logged as an ordinary
+  /// `symptoms` event (the FSM's existing event type — no new one is
+  /// invented here), which then flows through the normal stack/emergency
+  /// pipeline. Every other hypothesis type (sensor lag/error, compression)
+  /// has no structured place to record a confirmation yet, so the answer
+  /// is only acknowledged in text.
+  Future<OrchestratorReply> _resolveClinicalClarification(
+    String rawText,
+  ) async {
+    final type = _pendingClinicalClarification!;
+    _pendingClinicalClarification = null;
+    final yes = _matchYesNo(rawText);
+    if (yes == true &&
+        (type == ClinicalHypothesisType.trueHypoglycemia ||
+            type == ClinicalHypothesisType.trueHyperglycemia)) {
+      _eventStack.add(EventInstance(
+        type: EventType.symptoms,
+        data: {
+          'symptomType': type == ClinicalHypothesisType.trueHypoglycemia
+              ? 'hypo'
+              : 'hyper',
+        },
+        source: EventSource.quickReply,
+      ));
+      return _resolveStack();
+    }
+    return OrchestratorReply(
+      yes == true ? 'Obrigado por confirmar.' : 'Entendido.',
+    );
   }
 
   Future<OrchestratorReply?> _tryFillContext(String rawText) async {

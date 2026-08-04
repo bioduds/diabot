@@ -1,4 +1,4 @@
-%% fsm-contract: {"windows":[{"name":"last15Minutes","minutes":15},{"name":"last1Hour","minutes":60},{"name":"last4Hours","minutes":240},{"name":"last12Hours","minutes":720},{"name":"last24Hours","minutes":1440}],"eventTypes":["meal","exercise","insulin","symptoms","glucose"],"consumers":["emergency","priority","knowledge"],"timestamp":"createdAt","globalStateChange":false,"lifecycleChange":false}
+%% fsm-contract: {"windows":[{"name":"last15Minutes","minutes":15},{"name":"last1Hour","minutes":60},{"name":"last4Hours","minutes":240},{"name":"last12Hours","minutes":720},{"name":"last24Hours","minutes":1440}],"eventTypes":["meal","exercise","insulin","symptoms","glucose"],"consumers":["emergency","priority","knowledge"],"timestamp":"createdAt","timeSinceSignals":["meal","bolus","basal","exercise","symptoms"],"globalStateChange":false,"lifecycleChange":false}
 %% This contract is checked by test/fsm_mermaid_contract_test.dart.
 flowchart LR
   STACK[Current event stack] --> TIME[TimeEngine buildContext]
@@ -21,9 +21,11 @@ flowchart LR
   CONTEXT --> EMERGENCY[EmergencyEngine]
   CONTEXT --> PRIORITY[PriorityEngine]
   CONTEXT --> KNOWLEDGE[KnowledgeEngine]
+  CONTEXT --> TIMESINCE[timeSinceMeal/Bolus/Basal/Exercise/Symptoms]
+  TIMESINCE --> EVIDENCE[EvidenceFusionEngine]
 
   EMERGENCY --> GATE[Emergency gate]
   PRIORITY --> RESOLUTION[Priority-selected event]
   KNOWLEDGE --> MISSING[Missing information or next action]
 
-  NOTE[No new DiabAIGlobalState or EventStatus]
+  NOTE[No new DiabAIGlobalState or EventStatus. timeSinceX accessors only report elapsed duration since the most recent matching event within the already-fetched 24h horizon; they compute no probability, confidence, or diagnosis of their own.]

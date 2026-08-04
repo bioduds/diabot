@@ -1,5 +1,6 @@
-import 'dart:math' as math;
-
+import '../engines/evidence_fusion_engine.dart';
+import '../engines/hypothesis_engine.dart';
+import '../engines/sensor_reliability_engine.dart';
 import 'glucose_estimator.dart';
 
 /// What kind of real-world event the Past Event Interpreter suspects
@@ -174,6 +175,12 @@ class PastEventInterpreter {
   /// length, same order as produced by the chart's own estimate series)
   /// plus any [knownEvents] already logged, and returns the resulting
   /// hypotheses, deduplicated and sorted by [EventHypothesis.estimatedPeak].
+  ///
+  /// Classification itself is delegated to [HypothesisEngine], the single
+  /// hypothesis generator shared with real-time Nuno reasoning (see
+  /// docs/fsm/hypothesis_engine.mmd) \u2014 this class keeps only what is
+  /// specific to the Timeline: windowing, known-event suppression,
+  /// dedupe, and mapping onto [EventHypothesis].
   List<EventHypothesis> analyze({
     required List<GlucoseSample> samples,
     required List<GlucoseEstimate> estimates,
@@ -181,6 +188,16 @@ class PastEventInterpreter {
   }) {
     assert(samples.length == estimates.length);
     final raw = <EventHypothesis>[];
+    final config = HypothesisEngineConfig(
+      residualThresholdMgdl: residualThresholdMgdl,
+      dawnWindowStartHour: dawnWindowStartHour,
+      dawnWindowEndHour: dawnWindowEndHour,
+      risingVelocityThreshold: risingVelocityThreshold,
+      fallingVelocityThreshold: fallingVelocityThreshold,
+      dawnVelocityCeiling: dawnVelocityCeiling,
+      stressAccelerationThreshold: stressAccelerationThreshold,
+      stressVelocityCeiling: stressVelocityCeiling,
+    );
 
     for (var i = 1; i < samples.length; i++) {
       final residual = estimates[i].residual;
@@ -195,25 +212,45 @@ class PastEventInterpreter {
           samples[i].at.difference(samples[i - 1].at).inSeconds / 60.0;
       final acceleration =
           dtMinutes > 0 ? (velocity - previousVelocity) / dtMinutes : 0.0;
+      // Exercise is only ever a reclassification of a fall, mirroring the
+      // suppression window's own scale \u2014 see [_explainedByKnownEvent].
+      final recentExercise = knownEvents.any((event) =>
+          event.type == HypothesisType.exercise &&
+          at.difference(event.at).abs() <= suppressionWindow * 3);
 
-      final type = _classify(
-        residual: residual,
-        velocity: velocity,
-        acceleration: acceleration,
-        at: at,
-        knownEvents: knownEvents,
+      final evidence = EvidenceSet(
+        referenceTime: at,
+        glucoseEvidence: GlucoseEvidence(
+          observed: samples[i].mgdl,
+          estimatedNow: estimates[i].estimatedNow,
+          residual: residual,
+          kalmanConfidence: estimates[i].confidence,
+        ),
+        trendEvidence: TrendEvidence(
+          velocity: velocity,
+          acceleration: acceleration,
+        ),
+        symptomEvidence: const SymptomEvidence(),
+        insulinEvidence: const InsulinEvidence(),
+        exerciseEvidence: ExerciseEvidence(
+          recentIntenseExercise: recentExercise,
+        ),
+        mealEvidence: const MealEvidence(),
       );
-      if (type == null) continue;
+      final reliability = SensorReliabilityEngine.assess(evidence);
+      final hypotheses =
+          HypothesisEngine.generate(evidence, reliability, config: config);
+      final attribution = _firstAttribution(hypotheses);
+      if (attribution == null) continue;
+      if (attribution.confidence < minConfidence) continue;
 
-      final confidence = _confidenceFor(residual);
-      if (confidence < minConfidence) continue;
-
+      final type = _toHypothesisType(attribution.type);
       raw.add(EventHypothesis(
         id: _idFor(at),
         type: type,
         estimatedStart: at.subtract(const Duration(minutes: 5)),
         estimatedPeak: at,
-        confidence: confidence,
+        confidence: attribution.confidence,
         magnitude: residual,
         explanation: _explanationFor(type, at, residual),
         evidence: {
@@ -234,52 +271,44 @@ class PastEventInterpreter {
   bool _explainedByKnownEvent(DateTime at, List<KnownContextEvent> events) {
     for (final event in events) {
       // Exercise never blanket-suppresses a fall — it's reclassified as
-      // exercise by [_classify] instead, since the user may still want to
-      // see/confirm it on the timeline.
+      // exercise by [HypothesisEngine] instead, since the user may still
+      // want to see/confirm it on the timeline.
       if (event.type == HypothesisType.exercise) continue;
       if (at.difference(event.at).abs() <= suppressionWindow) return true;
     }
     return false;
   }
 
-  HypothesisType? _classify({
-    required double residual,
-    required double velocity,
-    required double acceleration,
-    required DateTime at,
-    required List<KnownContextEvent> knownEvents,
-  }) {
-    final hour = at.hour;
-    final inDawnWindow = hour >= dawnWindowStartHour && hour < dawnWindowEndHour;
-    // Checked before the meal branch: a slow, sustained overnight rise
-    // never crosses risingVelocityThreshold, so it must be classified on
-    // its own, lower velocity band rather than as a fallthrough of it.
-    if (residual > 0 &&
-        inDawnWindow &&
-        velocity > 0 &&
-        velocity <= dawnVelocityCeiling) {
-      return HypothesisType.dawnPhenomenon;
-    }
-    if (residual > 0 && velocity > risingVelocityThreshold) {
-      return HypothesisType.meal;
-    }
-    if (residual < 0 && velocity < -fallingVelocityThreshold) {
-      final recentExercise = knownEvents.any((event) =>
-          event.type == HypothesisType.exercise &&
-          at.difference(event.at).abs() <= suppressionWindow * 3);
-      return recentExercise ? HypothesisType.exercise : HypothesisType.insulin;
-    }
-    if (acceleration.abs() > stressAccelerationThreshold &&
-        velocity.abs() < stressVelocityCeiling) {
-      return HypothesisType.stress;
+  static const _attributionTypes = {
+    ClinicalHypothesisType.meal,
+    ClinicalHypothesisType.insulin,
+    ClinicalHypothesisType.exercise,
+    ClinicalHypothesisType.dawnPhenomenon,
+    ClinicalHypothesisType.stress,
+  };
+
+  ClinicalHypothesis? _firstAttribution(List<ClinicalHypothesis> hypotheses) {
+    for (final hypothesis in hypotheses) {
+      if (_attributionTypes.contains(hypothesis.type)) return hypothesis;
     }
     return null;
   }
 
-  double _confidenceFor(double residual) {
-    final scale = residualThresholdMgdl * 1.5;
-    final raw = 1 - math.exp(-residual.abs() / scale);
-    return raw.clamp(0.0, 0.99);
+  HypothesisType _toHypothesisType(ClinicalHypothesisType type) {
+    switch (type) {
+      case ClinicalHypothesisType.meal:
+        return HypothesisType.meal;
+      case ClinicalHypothesisType.insulin:
+        return HypothesisType.insulin;
+      case ClinicalHypothesisType.exercise:
+        return HypothesisType.exercise;
+      case ClinicalHypothesisType.dawnPhenomenon:
+        return HypothesisType.dawnPhenomenon;
+      case ClinicalHypothesisType.stress:
+        return HypothesisType.stress;
+      default:
+        throw StateError('$type is not an attribution hypothesis');
+    }
   }
 
   String _idFor(DateTime at) {

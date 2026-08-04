@@ -107,6 +107,11 @@ class GuidedModuleCatalog {
       titleKey: 'module.timeline.title',
       icon: Icons.timeline_outlined,
     ),
+    'clinical-clarification': GuidedModuleDefinition(
+      id: 'clinical-clarification',
+      titleKey: 'module.clinicalClarification.title',
+      icon: Icons.help_outline,
+    ),
   };
 
   static GuidedModuleDefinition forEvent(EventType type) {

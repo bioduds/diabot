@@ -89,4 +89,45 @@ void main() {
     expect(assessment.reason, contains('insulina rápida recente'));
     expect(assessment.reason, contains('exercício intenso recente'));
   });
+
+  test('reports elapsed time since the most recent event of each kind', () async {
+    final engine = TimeEngine(
+      now: () => now,
+      history: _MemoryHistory({
+        'insulin': [
+          storedEvent(now.subtract(const Duration(hours: 2)),
+              {'dose': 4, 'insulinType': 'rapida'}),
+          storedEvent(now.subtract(const Duration(hours: 8)),
+              {'dose': 10, 'insulinType': 'basal'}),
+        ],
+        'meal': [storedEvent(now.subtract(const Duration(hours: 1)), {'carbsGrams': 40})],
+        'exercise': [
+          storedEvent(now.subtract(const Duration(minutes: 45)), {'intensity': 'leve'}),
+        ],
+        'symptoms': [
+          storedEvent(now.subtract(const Duration(minutes: 10)), {'symptomType': 'hypo'}),
+        ],
+      }),
+    );
+
+    final context = await engine.buildContext(const []);
+
+    expect(context.timeSinceBolus, const Duration(hours: 2));
+    expect(context.timeSinceBasal, const Duration(hours: 8));
+    expect(context.timeSinceMeal, const Duration(hours: 1));
+    expect(context.timeSinceExercise, const Duration(minutes: 45));
+    expect(context.timeSinceSymptoms, const Duration(minutes: 10));
+  });
+
+  test('reports null time-since when no matching event exists', () async {
+    final engine = TimeEngine(now: () => now, history: _MemoryHistory(const {}));
+
+    final context = await engine.buildContext(const []);
+
+    expect(context.timeSinceBolus, isNull);
+    expect(context.timeSinceBasal, isNull);
+    expect(context.timeSinceMeal, isNull);
+    expect(context.timeSinceExercise, isNull);
+    expect(context.timeSinceSymptoms, isNull);
+  });
 }

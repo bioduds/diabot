@@ -1,0 +1,13 @@
+%% fsm-contract: {"inputs":["glucoseEstimate","referenceTime","eventStack","temporalContext","previousEstimate"],"outputs":["EvidenceSet"],"evidenceCategories":["glucose","trend","symptom","insulin","exercise","meal"],"globalStateChange":false,"lifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"medicalReasoning":false}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  GLUCOSE[GlucoseEstimate: observed, estimated, velocity, residual, confidence] --> FUSE[EvidenceFusionEngine.fuse]
+  ATTIME[referenceTime: this sample/turn's timestamp] --> FUSE
+  STACK[Current event stack: this turn's reported symptoms] --> FUSE
+  TEMPORAL[TemporalContext: time since meal/bolus/basal/exercise/symptoms] --> FUSE
+  PREVIOUS[previousEstimate + previousAt, optional: for acceleration] --> FUSE
+  FUSE --> EVIDENCE[EvidenceSet: referenceTime, glucoseEvidence, trendEvidence, symptomEvidence, insulinEvidence, exerciseEvidence, mealEvidence]
+  EVIDENCE --> RELIABILITY[SensorReliabilityEngine]
+  EVIDENCE --> HYPOTHESIS[HypothesisEngine]
+
+  NOTE[EvidenceFusionEngine only organizes existing signals into one structured set. It computes no probabilities, confidence scores, or diagnoses; it creates no DiabAIGlobalState, EventStatus transition, or Emergency/Priority Engine impact of its own.]

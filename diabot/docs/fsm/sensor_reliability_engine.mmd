@@ -1,0 +1,11 @@
+%% fsm-contract: {"inputs":["EvidenceSet"],"outputs":["SensorReliability"],"reliabilityFactors":["residual","kalmanConfidence","velocity","symptomMismatch"],"globalStateChange":false,"lifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"medicalReasoning":false}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  EVIDENCE[EvidenceSet] --> ASSESS[SensorReliabilityEngine.assess]
+  RESIDUAL[Kalman residual, confidence, velocity] --> ASSESS
+  MISMATCH[Sensor reading vs reported symptoms mismatch] --> ASSESS
+  ASSESS --> RELIABILITY[SensorReliability: confidence, probableLag, probableCompression, probableSensorError]
+  RELIABILITY --> HYPOTHESIS[HypothesisEngine]
+  RELIABILITY --> CONTRADICTION[ContradictionEngine]
+
+  NOTE[SensorReliabilityEngine judges the CGM reading's trustworthiness only, never the patient's physiological state. It creates no DiabAIGlobalState, EventStatus transition, or Emergency/Priority Engine impact of its own.]

@@ -44,6 +44,45 @@ class TemporalSnapshot implements TemporalContext {
         final age = referenceTime.difference(event.createdAt);
         return event.type == type && !age.isNegative && age <= within;
       });
+
+  @override
+  Duration? get timeSinceMeal => _timeSince(EventType.meal);
+
+  @override
+  Duration? get timeSinceBolus => _timeSince(
+        EventType.insulin,
+        fieldKey: 'insulinType',
+        fieldValue: 'rapida',
+      );
+
+  @override
+  Duration? get timeSinceBasal => _timeSince(
+        EventType.insulin,
+        fieldKey: 'insulinType',
+        fieldValue: 'basal',
+      );
+
+  @override
+  Duration? get timeSinceExercise => _timeSince(EventType.exercise);
+
+  @override
+  Duration? get timeSinceSymptoms => _timeSince(EventType.symptoms);
+
+  /// Latest matching event's age, or null if none — searches the full
+  /// horizon already fetched by [TimeEngine.buildContext] (up to 24h).
+  Duration? _timeSince(EventType type, {String? fieldKey, Object? fieldValue}) {
+    DateTime? mostRecent;
+    for (final event in events) {
+      if (event.type != type) continue;
+      if (fieldKey != null && event.data[fieldKey] != fieldValue) continue;
+      if (mostRecent == null || event.createdAt.isAfter(mostRecent)) {
+        mostRecent = event.createdAt;
+      }
+    }
+    if (mostRecent == null) return null;
+    final age = referenceTime.difference(mostRecent);
+    return age.isNegative ? Duration.zero : age;
+  }
 }
 
 /// Builds a timestamp-based view of the current event stack and local history.

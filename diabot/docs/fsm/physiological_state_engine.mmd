@@ -1,0 +1,9 @@
+%% fsm-contract: {"inputs":["EvidenceSet","ClinicalHypothesis history"],"outputs":["PhysiologicalPhase"],"phases":["absorbingCarbs","insulinDominant","acceleratingDrop","hypoRisk","recovering","stabilizing"],"persistence":"in-memory-per-assessment","globalStateChange":false,"lifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"medicalReasoning":true}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  EVIDENCE[EvidenceSet: trend, velocity, acceleration] --> CLASSIFY[PhysiologicalStateEngine.classify]
+  HISTORY[Recent ClinicalHypothesis history, this session only] --> CLASSIFY
+  CLASSIFY --> PHASE[PhysiologicalPhase: absorbingCarbs, insulinDominant, acceleratingDrop, hypoRisk, recovering, stabilizing]
+  PHASE --> CLINICAL[ClinicalReasoningLayer]
+
+  NOTE[PhysiologicalStateEngine recomputes the current phase from recent evidence on every assessment; v1 keeps no persisted phase-history table. It never stores an event and has no Emergency/Priority Engine impact of its own.]

@@ -1,0 +1,17 @@
+%% fsm-contract: {"inputs":["ClinicalHypothesis list","SensorReliability","ContradictionReport"],"outputs":["AssessmentConfidence"],"confidenceTiers":["alta","media","baixa"],"globalStateChange":false,"lifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"medicalReasoning":true}
+%% This contract is checked by test/fsm_mermaid_contract_test.dart.
+flowchart LR
+  HYPOTHESES[Ranked ClinicalHypothesis list] --> COMPUTE[ConfidenceEngine.compute]
+  RELIABILITY[SensorReliability] --> COMPUTE
+  CONTRADICTIONS[ContradictionReport] --> COMPUTE
+  COMPUTE --> OVERALL[Overall confidence 0..1]
+  COMPUTE --> PERHYPOTHESIS[Per-hypothesis confidence]
+  OVERALL --> TIER{Bucket into tier}
+  TIER -->|high| ALTA[alta]
+  TIER -->|mid| MEDIA[media]
+  TIER -->|low| BAIXA[baixa]
+  ALTA --> RESPONSE[ResponseBuilder]
+  MEDIA --> RESPONSE
+  BAIXA --> RESPONSE
+
+  NOTE[ConfidenceEngine only scores certainty; it never converts a hypothesis into a fact. Low confidence always yields a clarifying question rather than an assertive claim.]
