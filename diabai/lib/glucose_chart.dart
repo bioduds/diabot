@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:fl_chart/fl_chart.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -17,13 +18,30 @@ import 'local_db.dart';
 import 'profile_engine.dart';
 import 'profile_view.dart';
 
-enum _ChartMenuAction { clearDebugData }
+enum _ChartMenuAction {
+  clearDebugData,
+  diagnostics,
+  initModel,
+  clearConversation,
+  signOut,
+}
+
+/// Tri-state opacity toggle for the Timeline's hypothesis markers — a
+/// small dedicated button placed right on the chart (never buried in the
+/// [_ChartMenuAction] app-bar menu), since it's a display preference about
+/// the chart itself, cycled opaque → semitransparent → invisible →
+/// opaque. Persisted via [SharedPreferences] so it survives navigating
+/// away and back.
+enum _MarkerVisibility { opaque, translucent, hidden }
+
+const String _markerVisibilityPrefsKey = 'hypothesis_marker_visibility';
 
 class _GlucosePoint {
-  const _GlucosePoint(this.at, this.mgdl, this.source, {this.isLive = false});
+  const _GlucosePoint(this.at, this.mgdl, this.source, {this.isLive = false, this.trend});
   final DateTime at;
   final double mgdl;
   final String source; // 'manual' | 'cgm'
+  final CgmTrend? trend;
 
   /// True only for the point merged in directly from the on-demand
   /// LibreLinkUp snapshot's `current` (see [_GlucoseChartPageState._points]).
@@ -33,6 +51,25 @@ class _GlucosePoint {
   /// actual latest reading, so hiding that connection would make the
   /// current number look orphaned from its own chart.
   final bool isLive;
+}
+
+/// A hypothesis marker's computed on-screen position. Always exactly one
+/// hypothesis per layout \u2014 overlapping markers are never merged into a
+/// shared icon+badge anymore; a resolved/corrected one always stays its
+/// own free-standing icon, and overlapping pending ones are physically
+/// stacked instead (see `_GlucoseChartPageState._stackOverlappingPending`).
+/// `hypotheses` stays a list (rather than a single field) only so
+/// `_buildEffectWindowBars`'s shared iteration code didn't need to change.
+class _HypothesisLayout {
+  const _HypothesisLayout({
+    required this.hypotheses,
+    required this.left,
+    required this.top,
+  });
+
+  final List<EventHypothesis> hypotheses;
+  final double left;
+  final double top;
 }
 
 /// Sensor readings below/above these bounds are parsing glitches or sensor
@@ -59,8 +96,14 @@ const Duration _maxGapForLine = Duration(minutes: 20);
 /// Forward horizons (minutes from "now") plotted as a dashed forecast line
 /// extending past the last real reading \u2014 a simple constant-velocity
 /// extrapolation from the Kalman filter's own current state, not a new
-/// model. See [_GlucoseChartPageState._forecastSpots].
-const List<double> _forecastHorizonsMinutes = [5, 10, 15];
+/// model. See [_GlucoseChartPageState._forecastSpots]. Matches
+/// [_futureHorizonOptions] so the chart always has room for all four
+/// prediction offsets shown along the "AGORA" line.
+const List<double> _forecastHorizonsMinutes = [5, 10, 15, 30];
+
+/// Cycle of minutes-ahead offered by the FUTURO reading column (request
+/// #7) — tapping it advances circularly through this list.
+const List<double> _futureHorizonOptions = [5, 10, 15, 30];
 
 /// Selectable time-range filters for the chart.
 const List<Duration> _windowOptions = [
@@ -86,8 +129,14 @@ class GlucoseChartPage extends StatefulWidget {
     required this.cgmSyncEngine,
     required this.chatOverlay,
     required this.chatExpanded,
+    required this.isOnboarding,
     required this.onOpenChat,
     required this.onHypothesisTap,
+    this.onShowDiagnostics,
+    this.onInitModel,
+    this.onClearConversation,
+    this.onSignOut,
+    this.hasChatMessages,
   });
 
   final LocalDatabase database;
@@ -107,6 +156,12 @@ class GlucoseChartPage extends StatefulWidget {
   /// Whether the chat overlay is currently slid into view.
   final bool chatExpanded;
 
+  /// True only while first-run onboarding is still collecting the profile
+  /// — the chat then takes over the entire screen (no app bar, no glucose
+  /// header) instead of the normal layout's partial overlay, since there is
+  /// no real glucose data to show yet at that point. See [_HomeShellState].
+  final bool isOnboarding;
+
   /// Requests that the parent expand the chat overlay, handing back the
   /// deterministic assessment text so it can be surfaced as Nuno's first
   /// message in the conversation.
@@ -117,6 +172,15 @@ class GlucoseChartPage extends StatefulWidget {
   /// turn the tap into a conversation (Sim/Corrigir/Ignorar), never this
   /// widget's. See docs/fsm/past_event_interpreter.mmd.
   final void Function(EventHypothesis hypothesis) onHypothesisTap;
+
+  // The next 5 callbacks relocated here from a former popup menu on
+  // Nuno's own app bar, which was decluttered down to just the
+  // avatar/status/collapse button — this menu is now their only home.
+  final VoidCallback? onShowDiagnostics;
+  final VoidCallback? onInitModel;
+  final VoidCallback? onClearConversation;
+  final VoidCallback? onSignOut;
+  final bool Function()? hasChatMessages;
 
   @override
   State<GlucoseChartPage> createState() => _GlucoseChartPageState();
@@ -144,14 +208,39 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
   /// it never drives glucose plotting itself.
   List<EventHypothesis> _hypotheses = const [];
 
+  /// See [_MarkerVisibility]. Loaded from [SharedPreferences] in [initState].
+  _MarkerVisibility _markerVisibility = _MarkerVisibility.opaque;
+
+  /// Minutes-ahead currently shown by the FUTURO reading column, beyond
+  /// what ATUAL already compensates (see [_forecastEstimate]). Cycles
+  /// through [_futureHorizonOptions] on tap, circularly.
+  double _futureHorizonMinutes = _futureHorizonOptions.first;
+
   @override
   void initState() {
     super.initState();
     _load();
     _refreshSnapshot();
+    _loadMarkerVisibilityPreference();
     // Reloads local data *and* re-fetches the API snapshot every minute, so
     // the time axis and the current reading never go stale between visits.
     _refreshTimer = Timer.periodic(const Duration(minutes: 1), (_) => _refreshAll());
+  }
+
+  Future<void> _loadMarkerVisibilityPreference() async {
+    final preferences = await SharedPreferences.getInstance();
+    final stored = preferences.getString(_markerVisibilityPrefsKey);
+    final match = _MarkerVisibility.values.where((v) => v.name == stored);
+    if (match.isEmpty || !mounted) return;
+    setState(() => _markerVisibility = match.first);
+  }
+
+  Future<void> _cycleMarkerVisibility() async {
+    final next = _MarkerVisibility
+        .values[(_markerVisibility.index + 1) % _MarkerVisibility.values.length];
+    setState(() => _markerVisibility = next);
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(_markerVisibilityPrefsKey, next.name);
   }
 
   @override
@@ -201,7 +290,8 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
         final at = DateTime.parse(row['created_at'] as String);
         if (at.isAfter(futureCutoff)) continue;
         final source = payload['measurementContext'] == 'cgm' ? 'cgm' : 'manual';
-        raw.add(_GlucosePoint(at, mgdl, source));
+        final trend = cgmTrendFromLabel(payload['trend'] as String?);
+        raw.add(_GlucosePoint(at, mgdl, source, trend: trend));
       } catch (_) {
         // Skip malformed rows rather than failing the whole chart.
       }
@@ -217,9 +307,9 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
 
   /// Re-runs [PastEventInterpreter.analyze] over the chart's own sensor
   /// series plus already-logged meal/insulin/exercise events in the same
-  /// window, persists any new hypotheses (existing ones the user already
-  /// resolved are left untouched — see
-  /// [HypothesisGateway.upsertHypothesisIfAbsent]), then reloads the
+  /// window, persists any new/ongoing hypotheses (existing ones the user
+  /// already resolved are left untouched — see
+  /// [HypothesisGateway.refreshPendingHypothesis]), then reloads the
   /// visible window from storage so [_hypotheses] always reflects the
   /// user's own confirm/correct/dismiss decisions, not just this run's
   /// fresh analysis. This method only observes/interprets and persists;
@@ -228,10 +318,12 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
   Future<void> _refreshHypotheses() async {
     final points = _points;
     if (points.length < 2) {
-      if (mounted) setState(() => _hypotheses = const []);
+      if (mounted) {
+        setState(() => _hypotheses = const []);
+      }
       return;
     }
-    final estimates = _estimateSeries(points);
+    final estimates = _estimateSeries(points, includeTrend: false);
     final samples = [
       for (final p in points) GlucoseSample(at: p.at, mgdl: p.mgdl),
     ];
@@ -260,7 +352,17 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
       knownEvents: knownEvents,
     );
     for (final hypothesis in fresh) {
-      await widget.database.upsertHypothesisIfAbsent(hypothesis);
+      // Ongoing threads (see PastEventInterpreter._dedupe) refresh their
+      // existing pending row in place; only a brand-new thread — or one
+      // whose row is already resolved, where the refresh is a deliberate
+      // no-op — falls through to the ifAbsent insert.
+      final refreshed = await widget.database.refreshPendingHypothesis(hypothesis);
+      if (!refreshed) {
+        await widget.database.upsertHypothesisIfAbsent(hypothesis);
+      }
+      // Cleans up stray rows left over from before the same candidates
+      // merged into this one thread (or from an older app version).
+      await widget.database.prunePendingDuplicates(hypothesis);
     }
     final stored =
         await widget.database.hypothesesInWindow(_windowStart, _effectiveAsOf);
@@ -290,22 +392,25 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
         live.timestamp.isAfter(_windowStart) &&
         (lastLocalAt == null || live.timestamp.isAfter(lastLocalAt));
     final merged = liveMerged
-        ? [...filtered, _GlucosePoint(live.timestamp, live.mgdl, 'cgm')]
+        ? [...filtered, _GlucosePoint(live.timestamp, live.mgdl, 'cgm', trend: live.trend)]
         : filtered;
     final sums = <int, double>{};
     final counts = <int, int>{};
+    final trends = <int, CgmTrend>{};
     for (final p in merged) {
       final bucketMs = p.at.millisecondsSinceEpoch ~/
           (_sameInstantMinutes * 60000) *
           (_sameInstantMinutes * 60000);
       sums[bucketMs] = (sums[bucketMs] ?? 0) + p.mgdl;
       counts[bucketMs] = (counts[bucketMs] ?? 0) + 1;
+      if (p.trend != null) trends[bucketMs] = p.trend!;
     }
     final result = sums.keys
         .map((ms) => _GlucosePoint(
               DateTime.fromMillisecondsSinceEpoch(ms),
               sums[ms]! / counts[ms]!,
               'mixed',
+              trend: trends[ms],
             ))
         .toList()
       ..sort((a, b) => a.at.compareTo(b.at));
@@ -314,7 +419,7 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
     // mark that bucket as the connect-regardless-of-gap point.
     if (liveMerged && result.isNotEmpty) {
       final last = result.removeLast();
-      result.add(_GlucosePoint(last.at, last.mgdl, last.source, isLive: true));
+      result.add(_GlucosePoint(last.at, last.mgdl, last.source, isLive: true, trend: last.trend));
     }
     return result;
   }
@@ -351,14 +456,25 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
 
   _GlucosePoint? get _current => _points.isEmpty ? null : _points.last;
 
+  /// Each point already carries its own trend, from local storage or the
+  /// live snapshot merge (see [_points]) — no source-specific lookup needed.
+  CgmTrend? _trendForPoint(_GlucosePoint p) => p.trend;
+
   /// Runs [points] (already chronological) through a fresh [GlucoseEstimator]
   /// \u2014 recomputed from scratch each call rather than kept as long-lived
   /// state, consistent with how [_points] itself is recomputed on every read
   /// (see its doc comment). Cheap enough for a phone-local chart of at most
   /// a few thousand points.
-  List<GlucoseEstimate> _estimateSeries(List<_GlucosePoint> points) {
+  // [includeTrend]=false is required for hypothesis analysis: fusing the
+  // sensor's own coarse trend arrow into the Kalman velocity state pulls
+  // it toward agreeing with the sensor, suppressing the very
+  // value/velocity residual PastEventInterpreter looks for.
+  List<GlucoseEstimate> _estimateSeries(List<_GlucosePoint> points, {bool includeTrend = true}) {
     final estimator = GlucoseEstimator();
-    return [for (final p in points) estimator.addReading(p.mgdl, p.at)];
+    return [
+      for (final p in points)
+        estimator.addReading(p.mgdl, p.at, trend: includeTrend ? _trendForPoint(p) : null),
+    ];
   }
 
   /// The Kalman-based physiological estimate for the latest reading \u2014 see
@@ -368,6 +484,28 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
     final points = _points;
     if (points.isEmpty) return null;
     return _estimateSeries(points).last;
+  }
+
+  /// The FUTURO reading's projection: [_futureHorizonMinutes] further
+  /// ahead than [_latestEstimate] already compensates (total horizon =
+  /// [GlucoseEstimator.lagMinutes] + [_futureHorizonMinutes]) — see
+  /// [GlucoseEstimator.forecast]. Null until there's at least one point.
+  GlucoseEstimate? get _futureEstimate {
+    final points = _points;
+    if (points.isEmpty) return null;
+    final estimator = GlucoseEstimator();
+    for (final p in points) {
+      estimator.addReading(p.mgdl, p.at, trend: _trendForPoint(p));
+    }
+    return estimator.forecast(_futureHorizonMinutes);
+  }
+
+  /// Advances [_futureHorizonMinutes] to the next entry in
+  /// [_futureHorizonOptions], circularly.
+  void _cycleFutureHorizon() {
+    final index = _futureHorizonOptions.indexOf(_futureHorizonMinutes);
+    final next = _futureHorizonOptions[(index + 1) % _futureHorizonOptions.length];
+    setState(() => _futureHorizonMinutes = next);
   }
 
   /// Dashed continuation of the Kalman line past the last real reading, at
@@ -395,20 +533,41 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
   /// [_buildHypothesisMarkers] (so a marker's horizontal position lines up
   /// with the sensor point it explains), instead of two independent
   /// computations silently drifting apart.
+  ///
+  /// Reserves [_forecastZoneFraction] of the total width for the AGORA/
+  /// forecast zone past "now", so that zone never gets squeezed down to a
+  /// sliver even when the +5/10/15/30 min forecast spots themselves would
+  /// fit in less space (request #4).
+  static const double _forecastZoneFraction = 0.16;
+
   double _chartMaxX(List<_GlucosePoint> points) {
     final forecastSpots = _forecastSpots(points);
     final windowHours = _window.inHours.toDouble();
+    final reservedMaxX = windowHours / (1 - _forecastZoneFraction);
     final forecastMaxX =
         forecastSpots.isEmpty ? windowHours : forecastSpots.map((s) => s.x).reduce(math.max);
-    return math.max(windowHours, forecastMaxX);
+    return math.max(reservedMaxX, forecastMaxX);
   }
 
-  static const Map<HypothesisType, String> _hypothesisEmoji = {
-    HypothesisType.meal: '\u{1F37D}\u{FE0F}',
-    HypothesisType.insulin: '\u{1F489}',
-    HypothesisType.exercise: '\u{1F3C3}',
-    HypothesisType.dawnPhenomenon: '\u{1F634}',
-    HypothesisType.stress: '\u{1F61F}',
+  /// Colored, type-specific icon shown only once a hypothesis has been
+  /// resolved ([HypothesisStatus.confirmed] or [HypothesisStatus.corrected])
+  /// \u2014 while still [HypothesisStatus.pending] (or dismissed), the marker
+  /// shows a neutral question mark instead (see [_buildHypothesisMarkers]),
+  /// since the type is only a guess until the user validates or corrects it.
+  static const Map<HypothesisType, IconData> _hypothesisIcon = {
+    HypothesisType.meal: Icons.restaurant,
+    HypothesisType.insulin: Icons.vaccines,
+    HypothesisType.exercise: Icons.directions_run,
+    HypothesisType.dawnPhenomenon: Icons.wb_twilight,
+    HypothesisType.stress: Icons.sentiment_very_dissatisfied,
+  };
+
+  static const Map<HypothesisType, Color> _hypothesisColor = {
+    HypothesisType.meal: Color(0xFFEF8A3D),
+    HypothesisType.insulin: Color(0xFF3D8AEF),
+    HypothesisType.exercise: Color(0xFF3DAE55),
+    HypothesisType.dawnPhenomenon: Color(0xFFE0C23D),
+    HypothesisType.stress: Color(0xFFE0475D),
   };
 
   /// Reserved size (logical px) fl_chart carves out of the left axis for
@@ -417,69 +576,360 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
   /// label.
   static const double _chartLeftAxisReservedWidth = 36;
 
-  /// Non-intrusive tappable emoji markers for [_hypotheses], one per
-  /// hypothesis, positioned above the plot area at the x matching
-  /// [EventHypothesis.estimatedPeak]. Only the Timeline's own concern
-  /// (layout/positioning) lives here \u2014 tapping just reports the tap to
-  /// the parent via [GlucoseChartPage.onHypothesisTap], which owns turning
-  /// it into a Nuno conversation. See docs/fsm/past_event_interpreter.mmd.
+  /// Marker circle diameter \u2014 larger than the emoji-text markers this
+  /// replaced, per request, so both the pending question-mark and the
+  /// resolved type icon are easier to tap and read.
+  static const double _hypothesisMarkerSize = 34;
+
+  /// Assigns each hypothesis its natural (unclustered) marker position \u2014
+  /// horizontally at [EventHypothesis.estimatedPeak], vertically just above
+  /// the glucose curve's own value at that time.
+  ///
+  /// Kept below [_topLabelClearance] so a marker near "now" never paints
+  /// over fl_chart's own AGORA/forecast-horizon labels at the chart's top.
+  static const double _topLabelClearance = 26.0;
+
+  List<_HypothesisLayout> _layoutHypotheses(
+    List<_GlucosePoint> points,
+    double maxX,
+    double plotWidth,
+    double plotHeight,
+    ({double minY, double maxY}) yRange,
+  ) {
+    const plotLeft = _chartLeftAxisReservedWidth;
+    const markerGapAboveCurve = 8.0;
+    final layouts = <_HypothesisLayout>[];
+    for (final hypothesis in _hypotheses) {
+      // A confirmed/corrected hypothesis anchors its marker on the causal
+      // event's own start time instead of the peak, so the icon sits where
+      // the meal/insulin/exercise actually happened (request #3).
+      final isResolved = hypothesis.status == HypothesisStatus.confirmed ||
+          hypothesis.status == HypothesisStatus.corrected;
+      final anchor = isResolved ? hypothesis.estimatedStart : hypothesis.estimatedPeak;
+      final x = _xFor(anchor);
+      if (x < 0 || x > maxX) continue;
+      final fraction = x / maxX;
+      final left = plotLeft + fraction * plotWidth - _hypothesisMarkerSize / 2;
+      final curveValue = _nearestPoint(points, anchor)?.mgdl;
+      double top;
+      if (curveValue == null || yRange.maxY <= yRange.minY) {
+        top = _topLabelClearance;
+      } else {
+        final valueFraction =
+            ((yRange.maxY - curveValue) / (yRange.maxY - yRange.minY)).clamp(0.0, 1.0);
+        final curveTop = valueFraction * plotHeight;
+        top = (curveTop - _hypothesisMarkerSize - markerGapAboveCurve).clamp(
+          _topLabelClearance,
+          math.max(_topLabelClearance, plotHeight - _hypothesisMarkerSize),
+        );
+      }
+      layouts.add(_HypothesisLayout(hypotheses: [hypothesis], left: left, top: top));
+    }
+    return layouts;
+  }
+
+  /// Overlapping *pending* markers are physically stacked above or below
+  /// the curve instead of merged into one icon with a count badge (a
+  /// resolved/corrected hypothesis is never part of this \u2014 see
+  /// [_buildHypothesisMarkers], which never even passes resolved layouts
+  /// in here). Within a horizontally-overlapping cluster, whichever
+  /// member has the LOWER glucose value at its own anchor keeps its
+  /// natural above-the-curve slot (plenty of headroom above a low point);
+  /// the other(s) flip to a below-the-curve slot instead (headroom below,
+  /// avoiding the AGORA/forecast labels near the chart's top). Since
+  /// "lower curve value" is exactly what a before/after position implies
+  /// once the local rise/fall direction is known, this expresses that
+  /// same before-or-after-and-rising-or-falling relationship directly via
+  /// the curve's own value instead of re-deriving it from time order and
+  /// slope sign. More than two members on the same side stack further
+  /// out from the curve, one [_hypothesisMarkerSize] apart.
+  List<_HypothesisLayout> _stackOverlappingPending(
+    List<_HypothesisLayout> layouts,
+    List<_GlucosePoint> points,
+    ({double minY, double maxY}) yRange,
+    double plotHeight,
+  ) {
+    const markerGapBelowCurve = 8.0;
+    const stackSpacing = _hypothesisMarkerSize + 6.0;
+    final sorted = [...layouts]..sort((a, b) => a.left.compareTo(b.left));
+    final clusters = <List<_HypothesisLayout>>[];
+    for (final layout in sorted) {
+      if (clusters.isNotEmpty &&
+          (layout.left - clusters.last.last.left).abs() < _hypothesisMarkerSize) {
+        clusters.last.add(layout);
+      } else {
+        clusters.add([layout]);
+      }
+    }
+    final result = <_HypothesisLayout>[];
+    for (final cluster in clusters) {
+      if (cluster.length == 1) {
+        result.add(cluster.single);
+        continue;
+      }
+      final withValue = [
+        for (final layout in cluster)
+          (
+            layout: layout,
+            mgdl: _nearestPoint(points, layout.hypotheses.single.estimatedPeak)?.mgdl ?? 0.0,
+          ),
+      ]..sort((a, b) => a.mgdl.compareTo(b.mgdl));
+      final aboveCount = (withValue.length / 2).ceil();
+      final canPositionOnCurve = yRange.maxY > yRange.minY;
+      for (var i = 0; i < withValue.length; i++) {
+        final entry = withValue[i];
+        if (i < aboveCount) {
+          final top = (entry.layout.top - i * stackSpacing).clamp(
+            _topLabelClearance,
+            math.max(_topLabelClearance, plotHeight - _hypothesisMarkerSize),
+          );
+          result.add(_HypothesisLayout(
+            hypotheses: entry.layout.hypotheses,
+            left: entry.layout.left,
+            top: top.toDouble(),
+          ));
+        } else {
+          final belowIndex = i - aboveCount;
+          double top;
+          if (!canPositionOnCurve) {
+            top = _topLabelClearance + belowIndex * stackSpacing;
+          } else {
+            final valueFraction =
+                ((yRange.maxY - entry.mgdl) / (yRange.maxY - yRange.minY)).clamp(0.0, 1.0);
+            final curveTop = valueFraction * plotHeight;
+            top = curveTop + markerGapBelowCurve + belowIndex * stackSpacing;
+          }
+          top = top.clamp(0.0, math.max(0.0, plotHeight - _hypothesisMarkerSize));
+          result.add(_HypothesisLayout(
+            hypotheses: entry.layout.hypotheses,
+            left: entry.layout.left,
+            top: top.toDouble(),
+          ));
+        }
+      }
+    }
+    return result;
+  }
+
+  /// Non-intrusive tappable markers for [_hypotheses], one per hypothesis,
+  /// positioned at the x matching [EventHypothesis.estimatedPeak] and just
+  /// above the glucose curve's own value at that time (instead of a fixed
+  /// height near the top of the chart). Only the Timeline's own concern
+  /// (layout/positioning/icon-state) lives here \u2014 tapping just reports
+  /// the tap to the parent via [GlucoseChartPage.onHypothesisTap], which
+  /// owns turning it into a Nuno conversation.
+  /// See docs/fsm/past_event_interpreter.mmd.
   Widget _buildHypothesisMarkers(List<_GlucosePoint> points) {
     if (_hypotheses.isEmpty) return const SizedBox.shrink();
+    if (_markerVisibility == _MarkerVisibility.hidden) return const SizedBox.shrink();
     final maxX = _chartMaxX(points);
     if (maxX <= 0) return const SizedBox.shrink();
+    final yRange = _yRange(points);
+    final bottomReserved = _window.inHours > 24 ? 36.0 : 28.0;
+    final markersOpacity =
+        _markerVisibility == _MarkerVisibility.translucent ? 0.35 : 1.0;
     return LayoutBuilder(
       builder: (context, constraints) {
         const plotLeft = _chartLeftAxisReservedWidth;
         final plotWidth = (constraints.maxWidth - plotLeft).clamp(0, constraints.maxWidth);
+        final plotHeight =
+            (constraints.maxHeight - bottomReserved).clamp(0.0, constraints.maxHeight);
+        final natural =
+            _layoutHypotheses(points, maxX, plotWidth.toDouble(), plotHeight, yRange);
+        // A resolved/corrected hypothesis always gets its own free-standing
+        // icon, never merged or stacked with anything else — only the
+        // still-pending ones (which render as a neutral "?") get stacked
+        // when they overlap in time.
+        final resolved = <_HypothesisLayout>[];
+        final pending = <_HypothesisLayout>[];
+        for (final layout in natural) {
+          final isResolved = layout.hypotheses.single.status == HypothesisStatus.confirmed ||
+              layout.hypotheses.single.status == HypothesisStatus.corrected;
+          (isResolved ? resolved : pending).add(layout);
+        }
+        final layouts = [
+          ...resolved,
+          ..._stackOverlappingPending(pending, points, yRange, plotHeight),
+        ];
         return Stack(
           children: [
-            for (final hypothesis in _hypotheses)
-              Builder(builder: (context) {
-                final x = _xFor(hypothesis.estimatedPeak);
-                if (x < 0 || x > maxX) return const SizedBox.shrink();
-                final fraction = x / maxX;
-                final left = plotLeft + fraction * plotWidth - 12;
-                final isPending = hypothesis.status == HypothesisStatus.pending;
-                return Positioned(
-                  left: left.clamp(0, constraints.maxWidth - 24).toDouble(),
-                  top: 4,
-                  child: GestureDetector(
-                    onTap: () => widget.onHypothesisTap(hypothesis),
-                    child: Opacity(
-                      opacity: isPending ? 1.0 : 0.45,
-                      child: Container(
-                        width: 24,
-                        height: 24,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: DiabAIPalette.surface,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: DiabAIPalette.surfaceBorder,
-                            width: 1,
+            // Duration-of-effect bars only ever show in opaque mode (never
+            // translucent, which shows icons only, nor hidden) \u2014 kept
+            // outside the icons' own Opacity wrapper below so translucent
+            // mode can't partially reveal them, per request #4.
+            if (_markerVisibility == _MarkerVisibility.opaque)
+              ..._buildEffectWindowBars(layouts, maxX, plotWidth.toDouble(), plotHeight),
+            Opacity(
+              opacity: markersOpacity,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  for (final layout in layouts)
+                    Builder(builder: (context) {
+                      final hypothesis = layout.hypotheses.single;
+                      final isResolved = hypothesis.status == HypothesisStatus.confirmed ||
+                          hypothesis.status == HypothesisStatus.corrected;
+                      final isDismissed = hypothesis.status == HypothesisStatus.dismissed;
+                      final icon = isResolved
+                          ? (_hypothesisIcon[hypothesis.type] ?? Icons.help_outline)
+                          : Icons.help_outline;
+                      final iconColor = isResolved
+                          ? (_hypothesisColor[hypothesis.type] ?? DiabAIPalette.accent)
+                          : DiabAIPalette.accent;
+
+                      return Positioned(
+                        left: layout.left.clamp(0, constraints.maxWidth - _hypothesisMarkerSize).toDouble(),
+                        top: layout.top,
+                        child: GestureDetector(
+                          onTap: () => widget.onHypothesisTap(hypothesis),
+                          child: Opacity(
+                            opacity: isDismissed ? 0.45 : 1.0,
+                            child: Container(
+                              width: _hypothesisMarkerSize,
+                              height: _hypothesisMarkerSize,
+                              alignment: Alignment.center,
+                              decoration: BoxDecoration(
+                                color: DiabAIPalette.surface,
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: isResolved ? iconColor : DiabAIPalette.surfaceBorder,
+                                  width: isResolved ? 1.5 : 1,
+                                ),
+                              ),
+                              child: Icon(icon, size: 20, color: iconColor),
+                            ),
                           ),
                         ),
-                        child: Text(
-                          _hypothesisEmoji[hypothesis.type] ?? '\u2753',
-                          style: const TextStyle(fontSize: 12),
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              }),
+                      );
+                    }),
+                ],
+              ),
+            ),
           ],
         );
       },
     );
   }
 
+  /// Thin, semi-transparent "still acting" bars for resolved hypotheses of
+  /// any type \u2014 spanning [EventHypothesis.estimatedStart] to
+  /// [EventHypothesis.effectWindowEnd], centered vertically on the
+  /// hypothesis's own marker so the line reads as coming out of the icon
+  /// (request #3). Opaque-mode-only, per request #4 (translucent shows
+  /// icons only, hidden shows nothing).
+  List<Widget> _buildEffectWindowBars(
+    List<_HypothesisLayout> layouts,
+    double maxX,
+    double plotWidth,
+    double plotHeight,
+  ) {
+    const plotLeft = _chartLeftAxisReservedWidth;
+    // Matches the resolved marker's own border exactly (see
+    // _buildHypothesisMarkers's `allResolved && sameType` case) — full
+    // opacity, same width — so the line reads as a literal extension of
+    // the icon's outline, not a separate decoration.
+    const barHeight = 1.5;
+    final bars = <Widget>[];
+    for (final layout in layouts) {
+      for (final hypothesis in layout.hypotheses) {
+        final isResolved = hypothesis.status == HypothesisStatus.confirmed ||
+            hypothesis.status == HypothesisStatus.corrected;
+        if (!isResolved) continue;
+        final startX = _xFor(hypothesis.estimatedStart).clamp(0.0, maxX);
+        final endX = _xFor(hypothesis.effectWindowEnd).clamp(0.0, maxX);
+        if (endX <= startX) continue;
+        final left = plotLeft + (startX / maxX) * plotWidth;
+        final width = (endX - startX) / maxX * plotWidth;
+        final top = (layout.top + _hypothesisMarkerSize / 2 - barHeight / 2)
+            .clamp(0.0, math.max(0.0, plotHeight - barHeight))
+            .toDouble();
+        final color = _hypothesisColor[hypothesis.type] ?? DiabAIPalette.accent;
+        bars.add(Positioned(
+          left: left,
+          top: top,
+          width: width,
+          height: barHeight,
+          child: IgnorePointer(
+            child: Container(color: color),
+          ),
+        ));
+      }
+    }
+    return bars;
+  }
+
+  /// Small floating control that cycles [_markerVisibility] \u2014 kept right
+  /// on top of the chart (per request #4), not in the [_ChartMenuAction]
+  /// app-bar menu, since it's a display toggle for the chart's own
+  /// hypothesis markers rather than a data/account action.
+  Widget _buildMarkerVisibilityToggle() {
+    late final IconData icon;
+    late final double iconOpacity;
+    late final String tooltip;
+    switch (_markerVisibility) {
+      case _MarkerVisibility.opaque:
+        icon = Icons.circle;
+        iconOpacity = 1.0;
+        tooltip = 'Marcadores opacos \u2014 toque para deixar semitransparentes';
+        break;
+      case _MarkerVisibility.translucent:
+        icon = Icons.circle;
+        iconOpacity = 0.35;
+        tooltip = 'Marcadores semitransparentes \u2014 toque para ocultar';
+        break;
+      case _MarkerVisibility.hidden:
+        icon = Icons.visibility_off;
+        iconOpacity = 1.0;
+        tooltip = 'Marcadores ocultos \u2014 toque para exibir';
+        break;
+    }
+    return Material(
+      color: DiabAIPalette.surface,
+      shape: const CircleBorder(),
+      elevation: 1,
+      child: IconButton(
+        tooltip: tooltip,
+        onPressed: _cycleMarkerVisibility,
+        icon: Opacity(
+          opacity: iconOpacity,
+          child: Icon(icon, size: 18, color: DiabAIPalette.accent),
+        ),
+        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+        padding: EdgeInsets.zero,
+      ),
+    );
+  }
+
+
   @override
   Widget build(BuildContext context) {
+    // First-run onboarding has no real glucose data to show yet \u2014 the chat
+    // takes over the whole screen instead of the normal partial overlay
+    // (which would otherwise leave the app bar/header showing stale or
+    // unrelated data above it).
+    if (widget.isOnboarding) {
+      return Scaffold(body: SafeArea(child: widget.chatOverlay));
+    }
     final points = _points;
     return Scaffold(
+      // A left-to-right side menu (its real content is a follow-up task);
+      // setting `drawer` makes Flutter show the standard hamburger icon
+      // where the "Glicemia — últimas Xh" title used to be, replacing it.
+      drawer: Drawer(
+        child: SafeArea(
+          child: ListView(
+            padding: EdgeInsets.zero,
+            children: const [
+              DrawerHeader(child: Text('DiabAI')),
+              ListTile(
+                leading: Icon(Icons.construction_outlined),
+                title: Text('Menu em construção'),
+              ),
+            ],
+          ),
+        ),
+      ),
       appBar: AppBar(
-        title: Text('Glicemia \u2014 últimas ${_windowLabel(_window)}'),
         actions: [
           IconButton(
             icon: const Icon(Icons.person_outline),
@@ -503,6 +953,14 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
               switch (action) {
                 case _ChartMenuAction.clearDebugData:
                   _clearDebugData();
+                case _ChartMenuAction.diagnostics:
+                  widget.onShowDiagnostics?.call();
+                case _ChartMenuAction.initModel:
+                  widget.onInitModel?.call();
+                case _ChartMenuAction.clearConversation:
+                  widget.onClearConversation?.call();
+                case _ChartMenuAction.signOut:
+                  widget.onSignOut?.call();
               }
             },
             itemBuilder: (context) => [
@@ -510,7 +968,37 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
                 value: _ChartMenuAction.clearDebugData,
                 child: ListTile(
                   leading: Icon(Icons.delete_forever_outlined),
-                  title: Text('Apagar dados de teste'),
+                  title: Text('Apagar dados'),
+                ),
+              ),
+              if (kDebugMode)
+                const PopupMenuItem(
+                  value: _ChartMenuAction.diagnostics,
+                  child: ListTile(
+                    leading: Icon(Icons.bug_report_outlined),
+                    title: Text('Diagnóstico da interpretação'),
+                  ),
+                ),
+              const PopupMenuItem(
+                value: _ChartMenuAction.initModel,
+                child: ListTile(
+                  leading: Icon(Icons.cloud_download_outlined),
+                  title: Text('Inicializar modelo local'),
+                ),
+              ),
+              PopupMenuItem(
+                value: _ChartMenuAction.clearConversation,
+                enabled: widget.hasChatMessages?.call() ?? false,
+                child: const ListTile(
+                  leading: Icon(Icons.delete_outline),
+                  title: Text('Limpar conversa'),
+                ),
+              ),
+              const PopupMenuItem(
+                value: _ChartMenuAction.signOut,
+                child: ListTile(
+                  leading: Icon(Icons.logout),
+                  title: Text('Sair'),
                 ),
               ),
             ],
@@ -565,6 +1053,19 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
                                               Positioned.fill(
                                                 child: _buildHypothesisMarkers(points),
                                               ),
+                                              if (_hypotheses.isNotEmpty)
+                                                Positioned(
+                                                  // Cleared above the bottom
+                                                  // axis's own reserved band,
+                                                  // and right of the left
+                                                  // (mg/dL) axis's own
+                                                  // reserved column, so it
+                                                  // never sits on top of
+                                                  // either axis's labels.
+                                                  bottom: (_window.inHours > 24 ? 36.0 : 28.0) + 6,
+                                                  left: _chartLeftAxisReservedWidth + 4,
+                                                  child: _buildMarkerVisibilityToggle(),
+                                                ),
                                             ],
                                           ),
                                         ),
@@ -632,9 +1133,10 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
     final shouldClear = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Apagar dados de teste?'),
+        title: const Text('Apagar dados?'),
         content: const Text(
-          'Isso apaga perfil, eventos, auditoria e sessão local deste dispositivo.',
+          'Isso apaga perfil, eventos, auditoria, conexão com o CGM e sessão '
+          'local deste dispositivo. Você precisará refazer a inicialização.',
         ),
         actions: [
           TextButton(
@@ -654,8 +1156,17 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
     await LocalDatabase.instance.clearAll();
     final preferences = await SharedPreferences.getInstance();
     await preferences.clear();
+    // The LibreLinkUp session lives in secure storage, untouched by the
+    // above — without this, a stale CGM connection survives this "wipe"
+    // and keeps showing old readings.
+    await LibreLinkUpCredentialStore().clear();
     await GoogleSignIn().signOut();
     await FirebaseAuth.instance.signOut();
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Dados apagados. Feche e abra o app novamente.'),
+      ));
+    }
   }
 
   /// Floats over the content instead of taking a line in the layout \u2014
@@ -706,108 +1217,133 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
     );
   }
 
-  /// Maps the API's rising/falling direction to an arrow icon \u2014 one of the
-  /// LibreLinkUp fields the page wasn't surfacing yet.
-  IconData? _trendIcon(CgmTrend? trend) {
+  /// The API's own trend arrow, quantized to 5 fixed positions (45\u00b0 apart)
+  /// \u2014 straight down/up for the "quickly" buckets, diagonal for a plain
+  /// rise/fall, flat right for stable. Base icon points right (0\u00b0/stable).
+  double? _sensorTrendAngleDegrees(CgmTrend? trend) {
     switch (trend) {
       case CgmTrend.fallingQuickly:
-        return Icons.keyboard_double_arrow_down;
+        return 90;
       case CgmTrend.falling:
-        return Icons.arrow_downward;
+        return 45;
       case CgmTrend.stable:
-        return Icons.arrow_forward;
+        return 0;
       case CgmTrend.rising:
-        return Icons.arrow_upward;
+        return -45;
       case CgmTrend.risingQuickly:
-        return Icons.keyboard_double_arrow_up;
+        return -90;
       case null:
         return null;
     }
   }
 
+  /// Same up/flat/down convention as [_sensorTrendAngleDegrees], but driven
+  /// continuously by the Kalman filter's own velocity state and snapped to
+  /// 22.5\u00b0 steps \u2014 double the sensor arrow's resolution, since the filter
+  /// isn't limited to 5 discrete API buckets.
+  double? _kalmanTrendAngleDegrees(double? velocity) {
+    if (velocity == null) return null;
+    const degreesPerMgdlPerMin = 90 / 3.5;
+    const step = 22.5;
+    final raw = (-velocity * degreesPerMgdlPerMin).clamp(-90.0, 90.0);
+    return (raw / step).round() * step;
+  }
+
   Widget _buildCurrentReading(BuildContext context) {
     final current = _current;
-    if (current == null) return const SizedBox.shrink();
     final estimate = _latestEstimate;
-    final trendIcon = _trendIcon(_snapshot?.current?.trend);
+    final future = _futureEstimate;
 
     final sensorColumn = _buildReadingColumn(
       label: 'SENSOR',
-      value: current.mgdl,
-      trendIcon: trendIcon,
+      value: current?.mgdl,
+      trendAngleDegrees:
+          current == null ? null : _sensorTrendAngleDegrees(_trendForPoint(current)),
     );
-    if (estimate == null) return sensorColumn;
 
+    // Confidence/lag caption lives only on FUTURO now — ATUAL is what the
+    // system treats as the current glucose, trusted enough to show plain.
     final estimateColumn = _buildReadingColumn(
       label: 'ATUAL',
-      value: estimate.estimatedNow,
-      onInfoTap: () => _showEstimateExplanation(context),
-      caption: '${_confidenceEmoji(estimate.confidencePercent)} '
-          '${estimate.confidencePercent.round()}% · '
-          '≈${estimate.lagMinutes.round()} min à frente',
+      value: estimate?.estimatedNow,
+      trendAngleDegrees: estimate == null ? null : _kalmanTrendAngleDegrees(estimate.velocity),
     );
 
+    final futureColumn = _buildReadingColumn(
+      label: 'FUTURO',
+      value: future?.estimatedNow,
+      caption: future == null
+          ? null
+          : '${_confidenceEmoji(future.confidencePercent)} '
+              '${future.confidencePercent.round()}% · '
+              '+${_futureHorizonMinutes.round()} min',
+      onTap: future == null ? null : _cycleFutureHorizon,
+    );
+
+    // Equal-flex thirds (not a shrink-wrapped row) so ATUAL always lands
+    // exactly in the screen's visual center, regardless of how wide SENSOR
+    // or FUTURO's own content happens to be.
     return Row(
-      mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        sensorColumn,
-        const SizedBox(width: 20),
+        Expanded(child: Center(child: sensorColumn)),
         Padding(
           padding: const EdgeInsets.only(top: 18),
           child: Container(width: 1, height: 60, color: DiabAIPalette.surfaceBorder),
         ),
-        const SizedBox(width: 20),
-        estimateColumn,
+        Expanded(child: Center(child: estimateColumn)),
+        Padding(
+          padding: const EdgeInsets.only(top: 18),
+          child: Container(width: 1, height: 60, color: DiabAIPalette.surfaceBorder),
+        ),
+        Expanded(child: Center(child: futureColumn)),
       ],
     );
   }
 
-  /// One "SENSOR" or "ATUAL" reading block \u2014 always shown at equal visual
-  /// weight, never one hidden behind or promoted over the other, per spec:
-  /// the raw sensor value and the Kalman estimate are both real information
-  /// the user is entitled to see, all the time.
+  /// One "SENSOR"/"ATUAL"/"FUTURO" reading block — always shown at equal
+  /// visual weight, never one hidden behind or promoted over the others,
+  /// per spec: the raw sensor value and the Kalman estimates are both real
+  /// information the user is entitled to see, all the time. Shows a '-'
+  /// placeholder (never a fabricated number) until a real [value] has been
+  /// obtained. [onTap], when set (FUTURO only), cycles the shown horizon.
+  static const double _trendIconSlotWidth = 28;
+
   Widget _buildReadingColumn({
     required String label,
-    required double value,
-    IconData? trendIcon,
-    VoidCallback? onInfoTap,
+    required double? value,
+    double? trendAngleDegrees,
+    VoidCallback? onTap,
     String? caption,
   }) {
-    final inRange = value >= _targetLow && value <= _targetHigh;
-    final color = inRange ? DiabAIPalette.online : DiabAIPalette.offline;
-    return Column(
+    final inRange = value != null && value >= _targetLow && value <= _targetHigh;
+    final color = value == null
+        ? DiabAIPalette.iconMuted
+        : (inRange ? DiabAIPalette.online : DiabAIPalette.offline);
+    final column = Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              label,
-              style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 1.2,
-                color: DiabAIPalette.iconMuted,
-              ),
-            ),
-            if (onInfoTap != null) ...[
-              const SizedBox(width: 4),
-              GestureDetector(
-                onTap: onInfoTap,
-                child: const Icon(Icons.info_outline, size: 14, color: DiabAIPalette.iconMuted),
-              ),
-            ],
-          ],
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 1.2,
+            color: DiabAIPalette.iconMuted,
+          ),
         ),
         const SizedBox(height: 4),
         Row(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
+            // A mirrored, equal-width invisible spacer on the left keeps
+            // the number itself centered in the column even though the
+            // arrow (right-only) would otherwise pull it visually left.
+            if (trendAngleDegrees != null) const SizedBox(width: _trendIconSlotWidth),
             Text(
-              value.round().toString(),
+              value == null ? '-' : value.round().toString(),
               style: TextStyle(
                 fontSize: 40,
                 fontWeight: FontWeight.bold,
@@ -815,10 +1351,17 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
                 height: 1,
               ),
             ),
-            if (trendIcon != null) ...[
-              const SizedBox(width: 4),
-              Icon(trendIcon, size: 24, color: color),
-            ],
+            if (trendAngleDegrees != null)
+              SizedBox(
+                width: _trendIconSlotWidth,
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Transform.rotate(
+                    angle: trendAngleDegrees * math.pi / 180,
+                    child: Icon(Icons.arrow_forward, size: 24, color: color),
+                  ),
+                ),
+              ),
           ],
         ),
         const SizedBox(height: 2),
@@ -836,6 +1379,8 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
         ],
       ],
     );
+    if (onTap == null) return column;
+    return GestureDetector(onTap: onTap, child: column);
   }
 
   /// Buckets [GlucoseEstimate.confidencePercent] into the colored-dot bands
@@ -846,31 +1391,6 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
     if (confidencePercent >= 75) return '\u{1F7E1}'; // 🟡
     if (confidencePercent >= 55) return '\u{1F7E0}'; // 🟠
     return '\u{1F534}'; // 🔴
-  }
-
-  /// Explains, in plain language, what the physiological estimate is
-  /// derived from \u2014 keeps the number transparent instead of a black box.
-  void _showEstimateExplanation(BuildContext context) {
-    showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Estimativa fisiológica'),
-        content: const Text(
-          'O sensor mede a glicose do líquido intersticial, que normalmente '
-          'representa a glicemia de alguns minutos atrás.\n\n'
-          'O DiabAI utiliza um modelo matemático (Filtro de Kalman) para '
-          'estimar a glicemia fisiológica atual.\n\n'
-          'Quanto maior a confiança, maior a probabilidade de que essa '
-          'estimativa represente sua glicose neste momento.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Entendi'),
-          ),
-        ],
-      ),
-    );
   }
 
   /// Deterministic, template-based summary of the current chart — not an
@@ -991,11 +1511,6 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
           const Text('Estimativa (Kalman)', style: style),
         ]),
         Row(mainAxisSize: MainAxisSize.min, children: [
-          swatch(DiabAIPalette.accentAlt),
-          const SizedBox(width: 6),
-          const Text('Previsão (+5/10/15min)', style: style),
-        ]),
-        Row(mainAxisSize: MainAxisSize.min, children: [
           swatch(DiabAIPalette.online),
           const SizedBox(width: 6),
           Text(
@@ -1036,12 +1551,13 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
 
   double _xFor(DateTime at) => at.difference(_windowStart).inSeconds / 3600.0;
 
-  LineChartData _buildChartData(BuildContext context) {
-    final points = _points;
+  /// The chart's y-axis (mg/dL) bounds \u2014 shared by [_buildChartData] (so
+  /// fl_chart's own scale matches this) and [_buildHypothesisMarkers] (so a
+  /// marker can be placed at the same height as the glucose curve point it
+  /// explains), instead of two independent computations silently drifting
+  /// apart, exactly like [_chartMaxX] does for the x-axis.
+  ({double minY, double maxY}) _yRange(List<_GlucosePoint> points) {
     final estimates = _estimateSeries(points);
-    final estimateByTime = {
-      for (var i = 0; i < points.length; i++) points[i].at: estimates[i],
-    };
     final forecastSpots = _forecastSpots(points);
     final dataMax = points.map((p) => p.mgdl).reduce(math.max);
     final dataMin = points.map((p) => p.mgdl).reduce(math.min);
@@ -1062,10 +1578,35 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
     final minY = math
         .max(0, math.min(math.min(math.min(dataMin, estimateMin), forecastMin), _targetLow) - 20)
         .toDouble();
+    return (minY: minY, maxY: maxY);
+  }
+
+  /// Nearest sample in [points] to [at] by absolute time distance \u2014 used
+  /// by [_buildHypothesisMarkers] to find roughly where the glucose curve
+  /// sits at a hypothesis's estimated peak, so its marker can float just
+  /// above that point instead of a fixed height near the top of the chart.
+  _GlucosePoint? _nearestPoint(List<_GlucosePoint> points, DateTime at) {
+    if (points.isEmpty) return null;
+    return points.reduce(
+      (a, b) => a.at.difference(at).abs() < b.at.difference(at).abs() ? a : b,
+    );
+  }
+
+  LineChartData _buildChartData(BuildContext context) {
+    final points = _points;
+    final estimates = _estimateSeries(points);
+    final estimateByTime = {
+      for (var i = 0; i < points.length; i++) points[i].at: estimates[i],
+    };
+    final forecastSpots = _forecastSpots(points);
+    final (:minY, :maxY) = _yRange(points);
     final windowHours = _window.inHours.toDouble();
     final maxX = _chartMaxX(points);
     final tickInterval = (windowHours / 4).clamp(1.0, windowHours).toDouble();
     final showDate = _window.inHours > 24;
+    // "Now" \u2014 anchors the AGORA line/label, the +5/+10/+15/+30 horizon
+    // labels, and the shaded prediction zone to its right (request #7).
+    final nowX = _xFor(points.last.at);
 
     return LineChartData(
       minX: 0,
@@ -1144,24 +1685,62 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
         bottomTitles: AxisTitles(
           sideTitles: SideTitles(
             showTitles: true,
-            reservedSize: showDate ? 32 : 24,
+            reservedSize: showDate ? 36 : 28,
             interval: tickInterval,
             getTitlesWidget: (value, meta) {
+              // fl_chart keeps stepping ticks past the real window into the
+              // reserved AGORA/forecast zone (request #4 reserves extra
+              // width there); those wouldn't correspond to a real time on
+              // the sensor's own axis, so hide them instead of drawing a
+              // clock time that doesn't exist yet.
+              if (value > windowHours + 0.01) return const SizedBox.shrink();
               final time = _windowStart.add(
                 Duration(minutes: (value * 60).round()),
               );
               final hhmm =
                   '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+              final label = showDate
+                  ? '${time.day.toString().padLeft(2, '0')}/${time.month.toString().padLeft(2, '0')}\n$hhmm'
+                  : hhmm;
+              // The tick landing on "now" gets a highlighted purple pill
+              // instead of plain gray text, so the current time reads at a
+              // glance (request #4).
+              final isNow = (value - windowHours).abs() < 0.01;
+              if (!isNow) {
+                return Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    label,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                      color: DiabAIPalette.iconMuted,
+                    ),
+                  ),
+                );
+              }
               return Padding(
                 padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  showDate
-                      ? '${time.day.toString().padLeft(2, '0')}/${time.month.toString().padLeft(2, '0')}\n$hhmm'
-                      : hhmm,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 9,
-                    color: DiabAIPalette.iconMuted,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: DiabAIPalette.accent,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    label,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      color: DiabAIPalette.background,
+                      // Pins the pill to the glyph itself instead of the
+                      // font's default line box, and reuses the same
+                      // Padding(top:4) alignment as the plain tick labels
+                      // (not Center, which drifted from their baseline).
+                      height: 1.0,
+                    ),
                   ),
                 ),
               );
@@ -1173,13 +1752,21 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
             showTitles: true,
             reservedSize: 36,
             interval: 50,
-            getTitlesWidget: (value, meta) => Text(
-              value.toInt().toString(),
-              style: const TextStyle(
-                fontSize: 10,
-                color: DiabAIPalette.iconMuted,
-              ),
-            ),
+            getTitlesWidget: (value, meta) {
+              // fl_chart always adds the chart's exact minY/maxY as extra
+              // ticks alongside the interval-stepped ones (see
+              // AxisChartHelper.iterateThroughAxis) — skip those when they
+              // don't land on a clean 50-multiple, so a value like 224
+              // never renders squeezed right next to the 200 tick.
+              if (value.round() % 50 != 0) return const SizedBox.shrink();
+              return Text(
+                value.toInt().toString(),
+                style: const TextStyle(
+                  fontSize: 10,
+                  color: DiabAIPalette.iconMuted,
+                ),
+              );
+            },
           ),
         ),
       ),
@@ -1190,6 +1777,16 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
             y2: _targetHigh,
             color: DiabAIPalette.online.withValues(alpha: 0.07),
           ),
+        ],
+        verticalRangeAnnotations: [
+          // Discreetly marks everything right of "now" as prediction,
+          // not measured data (request #7).
+          if (nowX < maxX)
+            VerticalRangeAnnotation(
+              x1: nowX,
+              x2: maxX,
+              color: DiabAIPalette.accent.withValues(alpha: 0.22),
+            ),
         ],
       ),
       extraLinesData: ExtraLinesData(
@@ -1226,6 +1823,25 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
                 labelResolver: (_) => ' ${touched.y.round()} ',
               ),
             ),
+          // Marks "now" — the boundary between real sensor history and the
+          // dashed forecast — with the app's own accent purple, per request
+          // #7, ending in an "AGORA" label at the top of the chart.
+          VerticalLine(
+            x: nowX,
+            color: DiabAIPalette.accent.withValues(alpha: 0.7),
+            strokeWidth: 1.4,
+            dashArray: const [5, 4],
+            label: VerticalLineLabel(
+              show: true,
+              alignment: Alignment.topCenter,
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: DiabAIPalette.accent,
+              ),
+              labelResolver: (_) => 'AGORA',
+            ),
+          ),
         ],
         horizontalLines: [
           HorizontalLine(
@@ -1235,12 +1851,20 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
             dashArray: const [6, 4],
             label: HorizontalLineLabel(
               show: true,
-              alignment: Alignment.topLeft,
+              alignment: Alignment.centerLeft,
+              // No left padding — flush with the line's own start, so no
+              // sliver of the dashed line shows to the left of the box.
+              padding: const EdgeInsets.fromLTRB(0, 6, 6, 6),
               style: const TextStyle(
-                fontSize: 10,
+                fontSize: 13,
                 fontWeight: FontWeight.bold,
                 color: Colors.white,
                 backgroundColor: DiabAIPalette.online,
+                // Digit glyphs have no descenders, so the default
+                // line-height metric makes them look vertically offset
+                // within their own background-color box; height: 1.0 pins
+                // the line box to the glyph itself (request #5).
+                height: 1.0,
               ),
               labelResolver: (_) => ' ${_targetHigh.toInt()} ',
             ),
@@ -1252,12 +1876,14 @@ class _GlucoseChartPageState extends State<GlucoseChartPage> {
             dashArray: const [6, 4],
             label: HorizontalLineLabel(
               show: true,
-              alignment: Alignment.bottomLeft,
+              alignment: Alignment.centerLeft,
+              padding: const EdgeInsets.fromLTRB(0, 6, 6, 6),
               style: const TextStyle(
-                fontSize: 10,
+                fontSize: 13,
                 fontWeight: FontWeight.bold,
                 color: Colors.white,
                 backgroundColor: DiabAIPalette.online,
+                height: 1.0,
               ),
               labelResolver: (_) => ' ${_targetLow.toInt()} ',
             ),

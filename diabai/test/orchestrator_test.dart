@@ -109,7 +109,11 @@ void main() {
       () async {
     final orchestrator = ConversationOrchestrator();
 
-    final reply = await orchestrator.respond('free input', _mealInterpreter);
+    final firstReply = await orchestrator.respond('free input', _mealInterpreter);
+    // Every event type now asks a mandatory time-confirmation question
+    // first (see `eventTimeField` in events.dart) before its own fields.
+    expect(firstReply.guidedFieldKind, FieldKind.time);
+    final reply = await orchestrator.respond('Agora', null);
 
     expect(reply.text, contains('já se alimentou'));
     expect(reply.quickReplies, ['Já comi', 'Ainda não comi', 'Outras opções']);
@@ -123,8 +127,11 @@ void main() {
       confidence: 0.85,
     ));
 
-    final reply =
+    final firstReply =
         await orchestrator.respond('Agora a fome apertou', interpreter);
+    expect(firstReply.guidedFieldKind, FieldKind.time);
+    expect(firstReply.guidedModuleId, EventType.meal.name);
+    final reply = await orchestrator.respond('Agora', null);
 
     expect(reply.text, contains('já se alimentou'));
     expect(reply.quickReplies, contains('Outras opções'));
@@ -138,12 +145,12 @@ void main() {
 
     final guided = await orchestrator.respond('free input', _mealInterpreter);
     final free = await orchestrator.exitGuidedMode();
-    final resumed = await orchestrator.respond('Já comi', null);
+    final resumed = await orchestrator.respond('Agora', null);
 
-    expect(guided.guidedFieldKind, FieldKind.option);
+    expect(guided.guidedFieldKind, FieldKind.time);
     expect(free.guidedFieldKind, isNull);
     expect(free.text, contains('escrever livremente'));
-    expect(resumed.text, contains('carboidratos'));
+    expect(resumed.text, contains('já se alimentou'));
   });
 
   test('low-confidence semantic interpretation remains in free mode',
@@ -182,7 +189,8 @@ void main() {
 
     await orchestrator.respond('free input', _mealInterpreter);
     final menu = await orchestrator.respond('Outras opções', null);
-    final insulin = await orchestrator.respond('free input', _insulinInterpreter);
+    final insulinFirst = await orchestrator.respond('free input', _insulinInterpreter);
+    final insulin = await orchestrator.respond('Agora', null);
 
     expect(menu.text, contains('Escolha o que você quer registrar'));
     expect(menu.quickReplies, containsAll([
@@ -191,6 +199,7 @@ void main() {
       'Uma dose de insulina',
       'Registrar medicamento',
     ]));
+    expect(insulinFirst.guidedFieldKind, FieldKind.time);
     expect(insulin.text, contains('Quantas unidades'));
   });
 
@@ -219,7 +228,9 @@ void main() {
   test('bare glucose value reaches the FSM without an LLM parser', () async {
     final orchestrator = ConversationOrchestrator();
 
-    final reply = await orchestrator.respond('118', null);
+    final firstReply = await orchestrator.respond('118', null);
+    expect(firstReply.guidedFieldKind, FieldKind.time);
+    final reply = await orchestrator.respond('Agora', null);
 
     expect(reply.text, contains('alguma insulina'));
     expect(reply.quickReplies, ['Sim', 'Não', 'Outras opções']);
@@ -230,6 +241,7 @@ void main() {
     final orchestrator = ConversationOrchestrator(storeGateway: gateway);
 
     await orchestrator.respond('free input', _mealInterpreter);
+    await orchestrator.respond('Agora', null);
     await orchestrator.respond('Já comi', null);
     await orchestrator.respond('Não sei', null);
     await orchestrator.respond('Não agora', null);
@@ -251,6 +263,7 @@ void main() {
     final orchestrator = ConversationOrchestrator(storeGateway: gateway);
 
     await orchestrator.respond('free input', _mealInterpreter);
+    await orchestrator.respond('Agora', null);
     await orchestrator.respond('Já comi', null);
     await orchestrator.respond('Sim', null);
     await orchestrator.respond('-1', null);
@@ -299,6 +312,7 @@ void main() {
     final orchestrator = ConversationOrchestrator(storeGateway: gateway);
 
     await orchestrator.respond('free input', _mealInterpreter);
+    await orchestrator.respond('Agora', null);
     await orchestrator.respond('Já comi', null);
     await orchestrator.respond('Não sei', null);
     await orchestrator.respond('Não agora', null);
@@ -319,6 +333,7 @@ void main() {
     final orchestrator = ConversationOrchestrator(storeGateway: gateway);
 
     await orchestrator.respond('free input', _mealInterpreter);
+    await orchestrator.respond('Agora', null);
     final foods = await orchestrator.respond('Ainda não comi', null);
     final estimate = await orchestrator.respond('Arroz, feijão e frango', null);
     final grams = await orchestrator.respond('Sim, tenho', null);
@@ -340,6 +355,7 @@ void main() {
     final orchestrator = ConversationOrchestrator(storeGateway: gateway);
 
     await orchestrator.respond('free input', _mealInterpreter);
+    await orchestrator.respond('Agora', null);
     await orchestrator.respond('Já comi', null);
     await orchestrator.respond('Sim, sei', null);
     await orchestrator.respond('45', null);
@@ -389,13 +405,20 @@ void main() {
           NluExtraction(events: [type], confidence: 0.9),
         );
 
-        final reply = await orchestrator.respond('free input', interpreter);
+        final firstReply = await orchestrator.respond('free input', interpreter);
 
-        expect(reply.guidedModuleId, type.name);
+        expect(firstReply.guidedModuleId, type.name);
         expect(
-          () => GuidedModuleCatalog.byId(reply.guidedModuleId!),
+          () => GuidedModuleCatalog.byId(firstReply.guidedModuleId!),
           returnsNormally,
         );
+
+        // Every event type now asks a mandatory time-confirmation question
+        // first (see `eventTimeField` in events.dart) before its own
+        // fields.
+        expect(firstReply.guidedFieldKind, FieldKind.time);
+        expect(firstReply.quickReplies, contains('Agora'));
+        final reply = await orchestrator.respond('Agora', null);
 
         final firstField = eventDefinitions[type]!.first;
         expect(reply.guidedFieldKind, firstField.kind);
@@ -423,6 +446,7 @@ void main() {
       String value,
     ) async {
       await orchestrator.respond(value, null);
+      await orchestrator.respond('Agora', null);
       await orchestrator.respond('Não', null);
       await orchestrator.respond('Aleatória', null);
       return orchestrator.respond('Continuar sem contexto', null);

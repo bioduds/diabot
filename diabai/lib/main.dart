@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -12,13 +13,13 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_theme.dart';
 import 'cgm/past_event_interpreter.dart';
 import 'cgm_sync_engine.dart';
 import 'events.dart';
 import 'glucose_chart.dart';
+import 'glucose_time_picker.dart';
 import 'librelinkup.dart';
 import 'local_db.dart';
 import 'login_page.dart';
@@ -26,8 +27,6 @@ import 'llm_runtime.dart';
 import 'module_catalog.dart';
 import 'nlu.dart';
 import 'orchestrator.dart';
-import 'profile_engine.dart';
-import 'profile_view.dart';
 import 'rag.dart';
 import 'time_engine.dart';
 import 'ui_text.dart';
@@ -154,6 +153,16 @@ class HomeShell extends StatefulWidget {
   State<HomeShell> createState() => _HomeShellState();
 }
 
+/// What the post-onboarding gate in [_HomeShellState] should show instead
+/// of the normal glucose chart, per AGENTS.md item 6: `none` proceeds
+/// straight to [GlucoseChartPage] (the default/only state for anyone who
+/// isn't set up with a linked LibreLinkUp account), `syncing` is a
+/// transitional "Obtendo leituras do CGM" screen shown while the very
+/// first sync after onboarding runs, and `failed` explains that no
+/// reading arrived yet and offers "Continuar sem CGM" or a retry that
+/// resumes the actual CGM connection sub-step (not just a blind re-poll).
+enum _PostOnboardingCgmStage { none, syncing, failed }
+
 class _HomeShellState extends State<HomeShell> {
   // Follows a linked LibreLinkUp account every 60s while the app is open
   // and stores new readings as ordinary glucose events — see
@@ -167,6 +176,13 @@ class _HomeShellState extends State<HomeShell> {
 
   final GlobalKey<_ChatPageState> _chatKey = GlobalKey<_ChatPageState>();
   late bool _chatExpanded = widget.startOnboarding;
+  // Unlike widget.startOnboarding (fixed for HomeShell's lifetime), this
+  // flips to false once onboarding actually completes, so the collapse
+  // button doesn't stay disabled for the rest of the session.
+  late bool _onboardingActive = widget.startOnboarding;
+
+  _PostOnboardingCgmStage _postOnboardingCgmStage = _PostOnboardingCgmStage.none;
+  String? _cgmFailureReason;
 
   @override
   void initState() {
@@ -196,27 +212,196 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   void _collapseChat() {
-    if (_chatExpanded) setState(() => _chatExpanded = false);
+    if (!_chatExpanded) return;
+    // ChatPage stays permanently mounted (only its position animates), so
+    // a focused guided-input field would otherwise keep the keyboard open
+    // over the chart underneath.
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() => _chatExpanded = false);
   }
 
-  void _handleOnboardingComplete() {
-    setState(() => _chatExpanded = false);
+  bool _isLibreProvider(String provider) =>
+      provider.trim().toLowerCase().contains('libre');
+
+  /// Runs once onboarding (re-)finishes — including after a CGM
+  /// reconnection retry, since [_resumeCgmConnection] re-enters onboarding
+  /// and naturally calls this again on completion. Decides whether to show
+  /// the normal chart right away or gate it behind a "Obtendo leituras do
+  /// CGM" / failure screen, per AGENTS.md item 6.
+  Future<void> _handleOnboardingComplete() async {
+    // Same reason as _collapseChat: the last guided question's text field
+    // can still hold focus after ChatPage slides off-screen.
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() {
+      _chatExpanded = false;
+      _onboardingActive = false;
+    });
+    final profile = await UserProfile.load();
+    if (!mounted) return;
+    if (profile.cgmUsaServico != 'sim' || !_isLibreProvider(profile.cgmProvider)) {
+      // Doesn't use a CGM, or uses one we can't auto-fetch from — nothing
+      // to wait for, go straight to the normal chart.
+      setState(() => _postOnboardingCgmStage = _PostOnboardingCgmStage.none);
+      return;
+    }
+    if (profile.cgmLibreLinkUpConectado != 'sim') {
+      // Chose a Libre sensor but the LibreLinkUp connection itself never
+      // succeeded during onboarding — nothing to fetch, skip straight to
+      // the failure screen instead of attempting a sync that can't work.
+      setState(() {
+        _postOnboardingCgmStage = _PostOnboardingCgmStage.failed;
+        _cgmFailureReason =
+            'Não foi possível conectar à sua conta LibreLinkUp durante a configuração.';
+      });
+      return;
+    }
+    setState(() => _postOnboardingCgmStage = _PostOnboardingCgmStage.syncing);
+    await _cgmSyncEngine.syncOnce();
+    if (!mounted) return;
+    final readings = await LocalDatabase.instance
+        .recentEventsOfType('glucose', const Duration(hours: 24));
+    if (!mounted) return;
+    if (readings.isNotEmpty) {
+      setState(() => _postOnboardingCgmStage = _PostOnboardingCgmStage.none);
+    } else {
+      setState(() {
+        _postOnboardingCgmStage = _PostOnboardingCgmStage.failed;
+        _cgmFailureReason =
+            'Conectamos à sua conta LibreLinkUp, mas ainda não recebemos '
+            'nenhuma leitura do sensor.';
+      });
+    }
+  }
+
+  /// "Continuar sem CGM" — dismisses the gate and shows the normal chart
+  /// even though no reading arrived.
+  void _continueWithoutCgm() {
+    setState(() => _postOnboardingCgmStage = _PostOnboardingCgmStage.none);
+  }
+
+  /// "Tentar conectar de novo" — per AGENTS.md item 6 this must resume the
+  /// actual CGM connection sub-step (asking email/password again), not
+  /// just blindly re-poll. Re-expands the embedded chat so the user can
+  /// answer it, then hands off to the already-built retry plumbing;
+  /// [_handleOnboardingComplete] fires again once it completes.
+  void _retryCgmConnection() {
+    setState(() {
+      _postOnboardingCgmStage = _PostOnboardingCgmStage.none;
+      _chatExpanded = true;
+      _onboardingActive = true;
+    });
+    _chatKey.currentState?._resumeCgmConnection();
   }
 
   @override
   Widget build(BuildContext context) {
-    return GlucoseChartPage(
+    final chart = GlucoseChartPage(
       database: LocalDatabase.instance,
       cgmSyncEngine: _cgmSyncEngine,
       chatExpanded: _chatExpanded,
+      isOnboarding: _onboardingActive,
       onOpenChat: _openChat,
       onHypothesisTap: _openHypothesis,
+      // These used to live on Nuno's own app bar; relocated here so that
+      // bar could be decluttered down to just the avatar/status/collapse.
+      onShowDiagnostics: () => _chatKey.currentState?._showSemanticDiagnostics(),
+      onInitModel: () => _chatKey.currentState?._promptInitModel(),
+      onClearConversation: () => _chatKey.currentState?._clearConversation(),
+      onSignOut: () => _chatKey.currentState?._signOut(),
+      hasChatMessages: () => _chatKey.currentState?.hasMessages ?? false,
       chatOverlay: ChatPage(
         key: _chatKey,
         startOnboarding: widget.startOnboarding,
         embedded: true,
-        onCollapse: widget.startOnboarding ? null : _collapseChat,
+        isExpanded: _chatExpanded,
+        onCollapse: _onboardingActive ? null : _collapseChat,
         onOnboardingComplete: _handleOnboardingComplete,
+      ),
+    );
+    if (_postOnboardingCgmStage == _PostOnboardingCgmStage.none) return chart;
+    // Overlaid (not swapped in) so the embedded ChatPage/_chatKey stays
+    // mounted underneath — needed for the retry button to be able to call
+    // back into it.
+    return Stack(
+      children: [
+        chart,
+        Positioned.fill(
+          child: _CgmConnectionGate(
+            stage: _postOnboardingCgmStage,
+            failureReason: _cgmFailureReason,
+            onRetry: _retryCgmConnection,
+            onContinue: _continueWithoutCgm,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Full-screen transitional/failure screen shown after onboarding while
+/// [_HomeShellState._handleOnboardingComplete] is fetching (or failed to
+/// fetch) the first CGM reading — see AGENTS.md item 6.
+class _CgmConnectionGate extends StatelessWidget {
+  const _CgmConnectionGate({
+    required this.stage,
+    required this.failureReason,
+    required this.onRetry,
+    required this.onContinue,
+  });
+
+  final _PostOnboardingCgmStage stage;
+  final String? failureReason;
+  final VoidCallback onRetry;
+  final VoidCallback onContinue;
+
+  @override
+  Widget build(BuildContext context) {
+    final syncing = stage == _PostOnboardingCgmStage.syncing;
+    return Material(
+      color: Theme.of(context).scaffoldBackgroundColor,
+      child: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  syncing ? Icons.sensors : Icons.cloud_off,
+                  size: 56,
+                  color: syncing ? null : Theme.of(context).colorScheme.error,
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  syncing ? 'Obtendo leituras do CGM…' : 'Não foi possível conectar',
+                  style: Theme.of(context).textTheme.titleLarge,
+                  textAlign: TextAlign.center,
+                ),
+                if (syncing) ...[
+                  const SizedBox(height: 24),
+                  const CircularProgressIndicator(),
+                ] else ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    failureReason ?? 'Não recebemos nenhuma leitura do sensor.',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 24),
+                  ElevatedButton(
+                    onPressed: onRetry,
+                    child: const Text('Tentar conectar de novo'),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton(
+                    onPressed: onContinue,
+                    child: const Text('Continuar sem CGM'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -227,6 +412,7 @@ class ChatPage extends StatefulWidget {
     super.key,
     this.startOnboarding = false,
     this.embedded = false,
+    this.isExpanded = true,
     this.onCollapse,
     this.onOnboardingComplete,
   });
@@ -238,6 +424,13 @@ class ChatPage extends StatefulWidget {
   /// Only changes the app bar's leading collapse button; the rest of the
   /// chat UI is identical in both modes.
   final bool embedded;
+
+  /// True once the sliding overlay is actually on-screen. The panel itself
+  /// stays permanently mounted (only animated off-screen when collapsed —
+  /// see [GlucoseChartPage._buildChatOverlay]), so this flag is what lets
+  /// [_GuidedInputPanel] avoid grabbing keyboard focus while invisible.
+  /// Always true outside the embedded/collapsible use case.
+  final bool isExpanded;
 
   /// Shown as a leading collapse button (only while [embedded]) so the
   /// user can retract the conversation back down over Glicemia. Null
@@ -288,6 +481,8 @@ class _GuidedPrompt {
     this.numericInputHint,
     this.unitOptions = const [],
     this.obscureInput = false,
+    this.eventCreatedAt,
+    this.shortTitle,
   });
 
   final String moduleId;
@@ -302,19 +497,24 @@ class _GuidedPrompt {
 
   /// True only for the LibreLinkUp password question (docs/fsm/cgm.mmd).
   final bool obscureInput;
+
+  /// The pending event's own creation moment when [kind] is
+  /// [FieldKind.time] — see [OrchestratorReply.guidedEventCreatedAt].
+  final DateTime? eventCreatedAt;
+
+  /// Short per-question header label (e.g. "Peso") — see
+  /// [OrchestratorReply.guidedShortTitle]. Null falls back to the
+  /// module's own title.
+  final String? shortTitle;
 }
 
-enum _ChatMenuAction {
-  diagnostics,
-  clearDebugData,
-  initModel,
-  clearConversation,
-  signOut,
-}
-
-class _ChatPageState extends State<ChatPage> {
+class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final TextEditingController _controller = TextEditingController();
   final List<Message> _messages = [];
+
+  // Whether the relocated 'Limpar conversa' action (Glicemia's app bar
+  // menu) should currently be enabled.
+  bool get hasMessages => _messages.isNotEmpty;
   final ScrollController _scrollController = ScrollController();
   int _lastScrolledMessageCount = 0;
   bool _isLoading = false;
@@ -331,6 +531,23 @@ class _ChatPageState extends State<ChatPage> {
   /// answer, which is routed through the normal orchestrator pipeline
   /// (instead of being treated as another Sim/Corrigir/Ignorar tap).
   bool _awaitingHypothesisCorrection = false;
+
+  /// True only while the user is looking at an already-resolved
+  /// hypothesis's stored data and choosing "Está correto"/"Fazer
+  /// alterações" (see [_openResolvedHypothesisReview]) — distinct from
+  /// [_awaitingHypothesisCorrection], which is the fresh Corrigir flow.
+  bool _reviewingResolvedHypothesis = false;
+
+  /// The stored event id being reviewed, so "Fazer alterações" can delete
+  /// the old row once its replacement finishes being logged.
+  String? _reviewedEventId;
+
+  /// Set right after a hypothesis is confirmed/corrected (or re-edited),
+  /// while the resulting meal/insulin/exercise guided flow may still take
+  /// several turns to actually finish and store an event — resolved in
+  /// [_presentReply] once the orchestrator reports a freshly stored event,
+  /// linking it back to this hypothesis (see docs/fsm/past_event_interpreter.mmd).
+  EventHypothesis? _hypothesisAwaitingEventLink;
   final Talker _talker = Talker();
   late final SemanticDiagnostics _semanticDiagnostics =
       SemanticDiagnostics(_talker);
@@ -374,10 +591,26 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _audioPlayer.onPlayerComplete.listen((_) {
       if (mounted) setState(() => _playingAudioPath = null);
     });
     _bootstrapAfterLogin();
+  }
+
+  /// Fires whenever the viewport's metrics change — in particular, when
+  /// the on-screen keyboard finishes opening/closing after focus moves
+  /// (e.g. the new-question autofocus in [_GuidedInputPanelState]). The
+  /// keyboard can still be animating in when [_scrollToBottomIfNewMessage]
+  /// already ran for the new message, leaving it partially hidden behind
+  /// the panel/keyboard once the resize settles — this re-scrolls once
+  /// that final layout is known.
+  @override
+  void didChangeMetrics() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+    });
   }
 
   Future<void> _bootstrapAfterLogin() async {
@@ -426,6 +659,7 @@ class _ChatPageState extends State<ChatPage> {
           numericInputHint: onboardingReply.numericInputHint,
           unitOptions: onboardingReply.unitOptions,
           obscureInput: onboardingReply.obscureNextAnswer,
+          shortTitle: onboardingReply.guidedShortTitle,
         );
         _interactionMode = _InteractionMode.guided;
       }
@@ -487,8 +721,11 @@ class _ChatPageState extends State<ChatPage> {
 
     // The LibreLinkUp password question is the one guided field whose
     // typed answer must never be echoed back into the visible chat log.
-    final displayText =
-        _guidedPrompt?.obscureInput == true ? '••••••••' : prompt;
+    final displayText = _guidedPrompt?.obscureInput == true
+        ? '••••••••'
+        : (_guidedPrompt?.kind == FieldKind.time
+            ? _formatTimeAnswer(prompt)
+            : prompt);
     setState(() {
       _messages.add(Message('user', displayText, audioPath: audioPath));
       if (!fromGuided && forcedText == null) _controller.clear();
@@ -505,6 +742,18 @@ class _ChatPageState extends State<ChatPage> {
       return _handleTimelineGuidedValue(value);
     }
     return _sendMessage(value, true);
+  }
+
+  /// Renders a `FieldKind.time` answer (either the literal "Agora" or an
+  /// ISO-8601 datetime sent by the guided panel's time picker) as a plain
+  /// `HH:mm` in the chat log instead of a raw ISO string.
+  String _formatTimeAnswer(String raw) {
+    if (raw.trim().toLowerCase() == 'agora') return 'Agora';
+    final parsed = DateTime.tryParse(raw);
+    if (parsed == null) return raw;
+    final hour = parsed.hour.toString().padLeft(2, '0');
+    final minute = parsed.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
   }
 
   Future<void> _exitGuidedMode() async {
@@ -535,6 +784,8 @@ class _ChatPageState extends State<ChatPage> {
               numericInputHint: reply.numericInputHint,
               unitOptions: reply.unitOptions,
               obscureInput: reply.obscureNextAnswer,
+              eventCreatedAt: reply.guidedEventCreatedAt,
+              shortTitle: reply.guidedShortTitle,
             );
       _interactionMode =
           guidedKind == null ? _InteractionMode.free : _InteractionMode.guided;
@@ -544,6 +795,31 @@ class _ChatPageState extends State<ChatPage> {
     // so it can slide the chat panel back down over Glicemia.
     if (wasOnboarding && guidedKind == null) {
       widget.onOnboardingComplete?.call();
+    }
+    // A confirmed/corrected Timeline hypothesis's guided flow may take
+    // several turns to actually store an event — once it does (stack
+    // empty, no more guided fields this turn), link it back now.
+    final awaitingLink = _hypothesisAwaitingEventLink;
+    if (awaitingLink != null && guidedKind == null) {
+      _hypothesisAwaitingEventLink = null;
+      final storedEvent = _orchestrator.lastStoredEvent;
+      final storedId = storedEvent?.id;
+      if (storedId != null) {
+        unawaited(
+          LocalDatabase.instance
+              .linkHypothesisToEvent(awaitingLink.id, storedId),
+        );
+        // The user may have dragged the curve-picker marker to a
+        // different moment than the hypothesis's own original guess — keep
+        // the Timeline's duration bar/marker honest with whatever time was
+        // actually confirmed (request #1).
+        if (storedEvent != null) {
+          unawaited(
+            LocalDatabase.instance
+                .realignHypothesisTiming(awaitingLink.id, storedEvent.createdAt),
+          );
+        }
+      }
     }
   }
 
@@ -558,17 +834,41 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
+  /// Re-opens the CGM connection sub-flow after onboarding already
+  /// finished \u2014 called by the post-onboarding "não foi possível
+  /// conectar" screen's "Tentar conectar de novo" action (see
+  /// docs/fsm/cgm.mmd). Reuses the same guided-prompt mechanism as
+  /// first-login onboarding, so [_presentReply] naturally calls
+  /// [ChatPage.onOnboardingComplete] again once it finishes.
+  Future<void> _resumeCgmConnection() async {
+    if (_isLoading) return;
+    setState(() => _isLoading = true);
+    final reply = await _orchestrator.retryCgmConnection();
+    if (!mounted) return;
+    _presentReply(reply);
+  }
+
   /// Opens the Sim/Corrigir/Ignorar conversation for a Past Event
   /// Interpreter hypothesis, tapped from the Timeline (see
   /// [GlucoseChartPage.onHypothesisTap]). This is the ONLY place a
   /// hypothesis turns into a Nuno conversation \u2014 the interpreter/Timeline
   /// never converse themselves. Reuses the existing guided-prompt-bar
   /// mechanism (like every other guided module) instead of a bespoke UI.
+  /// Once already resolved (confirmed/corrected), re-tapping the marker
+  /// instead reviews the real stored data \u2014 see
+  /// [_openResolvedHypothesisReview].
   void _receiveHypothesisPrompt(EventHypothesis hypothesis) {
+    if (hypothesis.status == HypothesisStatus.confirmed ||
+        hypothesis.status == HypothesisStatus.corrected) {
+      _openResolvedHypothesisReview(hypothesis);
+      return;
+    }
     final question = '${hypothesis.explanation} Foi isso que aconteceu?';
     setState(() {
       _pendingHypothesis = hypothesis;
       _awaitingHypothesisCorrection = false;
+      _reviewingResolvedHypothesis = false;
+      _reviewedEventId = null;
       _messages.add(Message('assistant', question));
       _guidedPrompt = _GuidedPrompt(
         moduleId: 'timeline',
@@ -580,24 +880,67 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
-  /// A short first-person phrase describing [type], used to hand a
-  /// confirmed hypothesis to the SAME meal/insulin/exercise guided module
-  /// the user would normally trigger by typing it themselves — never a
-  /// new/duplicate classification path. Returns null for hypothesis types
-  /// with no corresponding guided module (dawn phenomenon/stress): those
-  /// are only ever logged to the knowledge base, never routed anywhere.
-  String? _syntheticConfirmationText(HypothesisType type) {
-    switch (type) {
-      case HypothesisType.meal:
-        return 'Comi algo';
-      case HypothesisType.insulin:
-        return 'Apliquei insulina';
-      case HypothesisType.exercise:
-        return 'Fiz exercício';
-      case HypothesisType.dawnPhenomenon:
-      case HypothesisType.stress:
-        return null;
+  /// Describes what was actually logged for an already-resolved hypothesis
+  /// (see [describeLoggedEvent]) and offers to keep it or redo it \u2014 see
+  /// docs/fsm/past_event_interpreter.mmd. Falls back to a plain
+  /// explanation with no options when there is nothing linked to review
+  /// (dawnPhenomenon/stress, or a linked event that could no longer be
+  /// found).
+  Future<void> _openResolvedHypothesisReview(
+    EventHypothesis hypothesis,
+  ) async {
+    final linkedId = hypothesis.linkedEventId;
+    final row =
+        linkedId == null ? null : await LocalDatabase.instance.eventById(linkedId);
+    String description;
+    List<String> options = const [];
+    if (row == null) {
+      description = linkedId == null
+          ? '${hypothesis.explanation} Isso foi apenas uma observação, sem '
+              'um registro específico para revisar.'
+          : '${hypothesis.explanation} Não encontrei os detalhes desse '
+              'registro para revisar.';
+    } else {
+      final type = eventTypeFromString(row['type'] as String);
+      Map<String, dynamic> data = const {};
+      try {
+        data = jsonDecode(row['payload'] as String) as Map<String, dynamic>;
+      } catch (_) {}
+      final occurredAt =
+          DateTime.tryParse(row['created_at'] as String) ?? hypothesis.estimatedPeak;
+      if (type == null) {
+        description = '${hypothesis.explanation} Não encontrei os detalhes '
+            'desse registro para revisar.';
+      } else {
+        description =
+            '${describeLoggedEvent(type, data, occurredAt)} Quer fazer '
+            'alguma alteração?';
+        options = const ['Está correto', 'Fazer alterações'];
+      }
     }
+    if (!mounted) return;
+    setState(() {
+      _messages.add(Message('assistant', description));
+      if (options.isEmpty) {
+        _pendingHypothesis = null;
+        _reviewingResolvedHypothesis = false;
+        _reviewedEventId = null;
+        _guidedPrompt = null;
+        _interactionMode = _InteractionMode.free;
+      } else {
+        _pendingHypothesis = hypothesis;
+        _reviewingResolvedHypothesis = true;
+        _reviewedEventId = linkedId;
+        _awaitingHypothesisCorrection = false;
+        _guidedPrompt = _GuidedPrompt(
+          moduleId: 'timeline',
+          kind: FieldKind.option,
+          question: description,
+          options: options,
+        );
+        _interactionMode = _InteractionMode.guided;
+      }
+    });
   }
 
   /// Maps an [OrchestratorReply.guidedModuleId] back to the
@@ -631,19 +974,69 @@ class _ChatPageState extends State<ChatPage> {
       return;
     }
 
+    if (_reviewingResolvedHypothesis) {
+      _reviewingResolvedHypothesis = false;
+      final oldEventId = _reviewedEventId;
+      _reviewedEventId = null;
+      if (value == 'Está correto') {
+        _pendingHypothesis = null;
+        setState(() {
+          _messages.add(Message('user', value));
+          _messages.add(Message('assistant', 'Certo, mantido como está.'));
+          _guidedPrompt = null;
+          _interactionMode = _InteractionMode.free;
+        });
+        return;
+      }
+      // "Fazer alterações": the old record is dropped and redone from
+      // scratch through the same guided module a fresh confirmation uses
+      // — never a bespoke pre-filled editor (see
+      // docs/fsm/past_event_interpreter.mmd).
+      final eventType = eventTypeFromString(hypothesis.type.name);
+      if (eventType == null) {
+        _pendingHypothesis = null;
+        setState(() {
+          _messages.add(Message('user', value));
+          _guidedPrompt = null;
+          _interactionMode = _InteractionMode.free;
+        });
+        return;
+      }
+      if (oldEventId != null) {
+        await LocalDatabase.instance.deleteEventById(oldEventId);
+      }
+      _hypothesisAwaitingEventLink = hypothesis;
+      _pendingHypothesis = null;
+      setState(() {
+        _messages.add(Message('user', value));
+        _isLoading = true;
+      });
+      final reply = await _orchestrator.confirmHypothesisEvent(
+        eventType,
+        occurredAt: hypothesis.estimatedStart,
+      );
+      if (!mounted) return;
+      _presentReply(reply);
+      return;
+    }
+
     if (_awaitingHypothesisCorrection) {
       _awaitingHypothesisCorrection = false;
       setState(() {
         _messages.add(Message('user', value));
         _isLoading = true;
       });
-      final reply = await _getOrchestratorReply(value);
+      final reply = await _getOrchestratorReply(
+        value,
+        seedEventCreatedAt: hypothesis.estimatedStart,
+      );
       if (!mounted) return;
       await LocalDatabase.instance.updateHypothesisStatus(
         hypothesis.id,
         status: HypothesisStatus.corrected,
         type: _hypothesisTypeForModuleId(reply.guidedModuleId),
       );
+      _hypothesisAwaitingEventLink = hypothesis;
       _pendingHypothesis = null;
       _presentReply(reply);
       return;
@@ -655,9 +1048,9 @@ class _ChatPageState extends State<ChatPage> {
           hypothesis.id,
           status: HypothesisStatus.confirmed,
         );
-        final synthetic = _syntheticConfirmationText(hypothesis.type);
-        _pendingHypothesis = null;
-        if (synthetic == null) {
+        final eventType = eventTypeFromString(hypothesis.type.name);
+        if (eventType == null) {
+          _pendingHypothesis = null;
           setState(() {
             _messages.add(Message('user', value));
             _messages.add(
@@ -668,11 +1061,16 @@ class _ChatPageState extends State<ChatPage> {
           });
           return;
         }
+        _hypothesisAwaitingEventLink = hypothesis;
+        _pendingHypothesis = null;
         setState(() {
           _messages.add(Message('user', value));
           _isLoading = true;
         });
-        final reply = await _getOrchestratorReply(synthetic);
+        final reply = await _orchestrator.confirmHypothesisEvent(
+          eventType,
+          occurredAt: hypothesis.estimatedStart,
+        );
         if (!mounted) return;
         _presentReply(reply);
         return;
@@ -711,9 +1109,12 @@ class _ChatPageState extends State<ChatPage> {
   Future<OrchestratorReply> _getOrchestratorReply(
     String prompt, {
     Uint8List? audioBytes,
+    DateTime? seedEventCreatedAt,
   }) async {
     return _orchestrator.respond(prompt, _semanticInterpreter,
-        audioBytes: audioBytes, recentContext: _recentContextLines());
+        audioBytes: audioBytes,
+        recentContext: _recentContextLines(),
+        seedEventCreatedAt: seedEventCreatedAt);
   }
 
   /// Last few chat turns (oldest first, excluding the prompt just sent),
@@ -838,6 +1239,42 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
+  // Relocated (from a former popup menu on Nuno's own app bar) into
+  // Glicemia's app bar menu -- this is the only way to load the on-device
+  // model, since it's never auto-loaded at startup (see _defaultModelPath).
+  Future<void> _promptInitModel() async {
+    final controller = TextEditingController(text: _defaultModelPath);
+    final path = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Inicializar modelo local'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(
+              labelText: 'Caminho do modelo no dispositivo'),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(ctx).pop(null),
+              child: const Text('Cancelar')),
+          ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+              child: const Text('Iniciar')),
+        ],
+      ),
+    );
+    if (path != null && path.isNotEmpty) {
+      await _initLocalModel(path);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(_llmRuntime != null
+              ? 'Modelo local inicializado.'
+              : 'Falha ao inicializar modelo.'),
+        ));
+      }
+    }
+  }
+
   void _showSemanticDiagnostics() {
     showModalBottomSheet<void>(
       context: context,
@@ -950,36 +1387,6 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
-  Future<void> _clearDebugData() async {
-    final shouldClear = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Apagar dados de teste?'),
-        content: const Text(
-          'Isso apaga perfil, eventos, auditoria e sessão local deste dispositivo.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Cancelar'),
-          ),
-          ElevatedButton.icon(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            icon: const Icon(Icons.delete_forever),
-            label: const Text('Apagar'),
-          ),
-        ],
-      ),
-    );
-    if (shouldClear != true) return;
-
-    await LocalDatabase.instance.clearAll();
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.clear();
-    await GoogleSignIn().signOut();
-    await FirebaseAuth.instance.signOut();
-  }
-
   Future<void> _signOut() async {
     await GoogleSignIn().signOut();
     await FirebaseAuth.instance.signOut();
@@ -987,6 +1394,7 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _llmRuntime?.dispose();
     _semanticDiagnostics.dispose();
     _rag.dispose();
@@ -1171,18 +1579,12 @@ class _ChatPageState extends State<ChatPage> {
   @override
   Widget build(BuildContext context) {
     final modelReady = _llmRuntime != null;
+    final isOnboarding = _guidedPrompt?.moduleId == 'onboarding';
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _scrollToBottomIfNewMessage());
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
-        leading: widget.embedded
-            ? IconButton(
-                icon: const Icon(Icons.keyboard_arrow_down),
-                tooltip: 'Recolher conversa',
-                onPressed: widget.onCollapse,
-              )
-            : null,
         title: Row(
           children: [
             Container(
@@ -1190,10 +1592,11 @@ class _ChatPageState extends State<ChatPage> {
               height: 40,
               decoration: const BoxDecoration(
                 shape: BoxShape.circle,
-                gradient: DiabAIPalette.accentGradient,
+                image: DecorationImage(
+                  image: AssetImage('assets/images/diabai_icon_small.png'),
+                  fit: BoxFit.cover,
+                ),
               ),
-              child: const Icon(Icons.health_and_safety_rounded,
-                  color: Colors.white, size: 20),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -1201,13 +1604,17 @@ class _ChatPageState extends State<ChatPage> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Nuno is the assistant persona shown to users; DiabAI is the product/app name.
-                  const Text('Nuno',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w600,
-                        fontSize: 16,
-                        color: DiabAIPalette.textPrimary,
-                      )),
+                  // Nuno is the assistant persona shown to users; DiabAI is
+                  // the product/app name — shown instead while the guided
+                  // onboarding flow is still asking questions.
+                  Text(
+                    isOnboarding ? 'Bem Vindo(a) ao DiabAI' : 'Nuno',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 16,
+                      color: DiabAIPalette.textPrimary,
+                    ),
+                  ),
                   Row(
                     children: [
                       Container(
@@ -1240,105 +1647,12 @@ class _ChatPageState extends State<ChatPage> {
           ],
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.person_outline),
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(
-              builder: (_) => ProfileViewPage(
-                profileEngine: ProfileEngine(
-                  snapshotGateway: LocalDatabase.instance,
-                ),
-              ),
-            )),
-            tooltip: 'Ver perfil',
-          ),
-          PopupMenuButton<_ChatMenuAction>(
-            icon: const Icon(Icons.more_vert),
-            onSelected: (action) async {
-              switch (action) {
-                case _ChatMenuAction.diagnostics:
-                  _showSemanticDiagnostics();
-                case _ChatMenuAction.clearDebugData:
-                  _clearDebugData();
-                case _ChatMenuAction.initModel:
-                  final controller =
-                      TextEditingController(text: _defaultModelPath);
-                  final path = await showDialog<String>(
-                    context: context,
-                    builder: (ctx) => AlertDialog(
-                      title: const Text('Inicializar modelo local'),
-                      content: TextField(
-                        controller: controller,
-                        decoration: const InputDecoration(
-                            labelText: 'Caminho do modelo no dispositivo'),
-                      ),
-                      actions: [
-                        TextButton(
-                            onPressed: () => Navigator.of(ctx).pop(null),
-                            child: const Text('Cancelar')),
-                        ElevatedButton(
-                            onPressed: () =>
-                                Navigator.of(ctx).pop(controller.text.trim()),
-                            child: const Text('Iniciar')),
-                      ],
-                    ),
-                  );
-                  if (path != null && path.isNotEmpty) {
-                    await _initLocalModel(path);
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                        content: Text(_llmRuntime != null
-                            ? 'Modelo local inicializado.'
-                            : 'Falha ao inicializar modelo.'),
-                      ));
-                    }
-                  }
-                case _ChatMenuAction.clearConversation:
-                  if (_messages.isNotEmpty) _clearConversation();
-                case _ChatMenuAction.signOut:
-                  _signOut();
-              }
-            },
-            itemBuilder: (context) => [
-              if (kDebugMode)
-                const PopupMenuItem(
-                  value: _ChatMenuAction.diagnostics,
-                  child: ListTile(
-                    leading: Icon(Icons.bug_report_outlined),
-                    title: Text('Diagnóstico da interpretação'),
-                  ),
-                ),
-              if (kDebugMode)
-                const PopupMenuItem(
-                  value: _ChatMenuAction.clearDebugData,
-                  child: ListTile(
-                    leading: Icon(Icons.delete_forever_outlined),
-                    title: Text('Apagar dados de teste'),
-                  ),
-                ),
-              const PopupMenuItem(
-                value: _ChatMenuAction.initModel,
-                child: ListTile(
-                  leading: Icon(Icons.cloud_download_outlined),
-                  title: Text('Inicializar modelo local'),
-                ),
-              ),
-              PopupMenuItem(
-                value: _ChatMenuAction.clearConversation,
-                enabled: _messages.isNotEmpty,
-                child: const ListTile(
-                  leading: Icon(Icons.delete_outline),
-                  title: Text('Limpar conversa'),
-                ),
-              ),
-              const PopupMenuItem(
-                value: _ChatMenuAction.signOut,
-                child: ListTile(
-                  leading: Icon(Icons.logout),
-                  title: Text('Sair'),
-                ),
-              ),
-            ],
-          ),
+          if (widget.embedded)
+            IconButton(
+              icon: const Icon(Icons.keyboard_arrow_down),
+              tooltip: 'Recolher conversa',
+              onPressed: widget.onCollapse,
+            ),
         ],
       ),
       body: _isBootstrapping || _bootstrapError != null
@@ -1513,6 +1827,7 @@ class _ChatPageState extends State<ChatPage> {
                           key: ValueKey(_guidedPrompt!.question),
                           prompt: _guidedPrompt!,
                           isLoading: _isLoading,
+                          active: widget.isExpanded,
                           onSubmit: _sendGuidedValue,
                           onExit: _exitGuidedMode,
                         ),
@@ -1645,12 +1960,19 @@ class _GuidedInputPanel extends StatefulWidget {
     super.key,
     required this.prompt,
     required this.isLoading,
+    required this.active,
     required this.onSubmit,
     required this.onExit,
   });
 
   final _GuidedPrompt prompt;
   final bool isLoading;
+
+  /// True only while this panel is actually on-screen (see
+  /// [ChatPage.isExpanded]) — the panel is otherwise permanently mounted,
+  /// just slid off-screen, so [_GuidedInputPanelState] must not grab
+  /// keyboard focus while this is false.
+  final bool active;
   final ValueChanged<String> onSubmit;
   final VoidCallback onExit;
 
@@ -1660,12 +1982,15 @@ class _GuidedInputPanel extends StatefulWidget {
 
 class _GuidedInputPanelState extends State<_GuidedInputPanel> {
   final _controller = TextEditingController();
+  final _focusNode = FocusNode();
   String? _selectedUnit;
+  bool _obscurePassword = true;
 
   @override
   void initState() {
     super.initState();
     _initSelectedUnit();
+    _requestFocusForCurrentQuestion();
   }
 
   @override
@@ -1673,7 +1998,32 @@ class _GuidedInputPanelState extends State<_GuidedInputPanel> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.prompt.question != widget.prompt.question) {
       _initSelectedUnit();
+      _obscurePassword = true;
+      _requestFocusForCurrentQuestion();
+    } else if (!oldWidget.active && widget.active) {
+      // The panel became visible without a new question (e.g. the user
+      // just expanded the chat) — focus now instead of never, since the
+      // mount-time request below was skipped while inactive.
+      _requestFocusForCurrentQuestion();
     }
+  }
+
+  /// Opens the keyboard automatically for a free-text/numeric question
+  /// instead of requiring a tap first — e.g. the weight question. A no-op
+  /// for yesNo/option/time questions, which have no text field to focus,
+  /// and while [_GuidedInputPanel.active] is false, since this panel stays
+  /// mounted (just slid off-screen) even when collapsed — see
+  /// [ChatPage.isExpanded].
+  void _requestFocusForCurrentQuestion() {
+    if (!widget.active) return;
+    final prompt = widget.prompt;
+    final hasTextField = prompt.kind != FieldKind.yesNo &&
+        prompt.kind != FieldKind.option &&
+        prompt.kind != FieldKind.time;
+    if (!hasTextField) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focusNode.requestFocus();
+    });
   }
 
   void _initSelectedUnit() {
@@ -1684,6 +2034,7 @@ class _GuidedInputPanelState extends State<_GuidedInputPanel> {
   @override
   void dispose() {
     _controller.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
 
@@ -1692,6 +2043,44 @@ class _GuidedInputPanelState extends State<_GuidedInputPanel> {
     if (text.isEmpty || widget.isLoading) return;
     final value = _selectedUnit == null ? text : '$text $_selectedUnit';
     widget.onSubmit(value);
+  }
+
+  /// Opens a time picker for a `FieldKind.time` question and submits the
+  /// chosen moment as an ISO-8601 string. Prefers the drag-on-the-curve
+  /// picker (touch-and-hold the marker and slide it over the recent
+  /// glucose curve) whenever there's enough local history to draw one;
+  /// otherwise falls back to the plain time-of-day wheel, rolled back to
+  /// yesterday if that time-of-day hasn't happened yet today so "escolher
+  /// horário" can express something earlier today without a date picker.
+  /// The curve window and initial marker are centered on
+  /// [_GuidedPrompt.eventCreatedAt] (e.g. a confirmed hypothesis's own
+  /// estimated moment) when known, instead of always the latest reading.
+  Future<void> _pickTime() async {
+    final centerOn = widget.prompt.eventCreatedAt;
+    final curvePoints =
+        await loadRecentGlucosePoints(centerOn: centerOn);
+    if (!mounted) return;
+    if (curvePoints.length >= 2) {
+      final chosen = await showGlucoseCurveTimePicker(
+        context,
+        points: curvePoints,
+        initialTime: centerOn,
+        icon: GuidedModuleCatalog.byId(widget.prompt.moduleId).icon,
+      );
+      if (chosen != null && mounted) widget.onSubmit(chosen.toIso8601String());
+      return;
+    }
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+    );
+    if (picked == null || !mounted) return;
+    final now = DateTime.now();
+    var chosen = DateTime(now.year, now.month, now.day, picked.hour, picked.minute);
+    if (chosen.isAfter(now)) {
+      chosen = chosen.subtract(const Duration(days: 1));
+    }
+    widget.onSubmit(chosen.toIso8601String());
   }
 
   @override
@@ -1704,6 +2093,7 @@ class _GuidedInputPanelState extends State<_GuidedInputPanel> {
             prompt.kind == FieldKind.option) &&
         prompt.options.isNotEmpty;
     final numeric = prompt.kind == FieldKind.number;
+    final isTime = prompt.kind == FieldKind.time;
     final module = GuidedModuleCatalog.byId(prompt.moduleId);
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
@@ -1717,7 +2107,7 @@ class _GuidedInputPanelState extends State<_GuidedInputPanel> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  UiText.current.get(module.titleKey),
+                  prompt.shortTitle ?? UiText.current.get(module.titleKey),
                   style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
               ),
@@ -1728,7 +2118,28 @@ class _GuidedInputPanelState extends State<_GuidedInputPanel> {
               ),
             ],
           ),
-          if (usesOptions)
+          if (isTime)
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: widget.isLoading
+                        ? null
+                        : () => widget.onSubmit('Agora'),
+                    child: const Text('Agora'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: widget.isLoading ? null : _pickTime,
+                    icon: const Icon(Icons.access_time),
+                    label: const Text('Escolher horário'),
+                  ),
+                ),
+              ],
+            )
+          else if (usesOptions)
             Wrap(
               spacing: 8,
               runSpacing: 8,
@@ -1765,7 +2176,8 @@ class _GuidedInputPanelState extends State<_GuidedInputPanel> {
                 Expanded(
                   child: TextField(
                     controller: _controller,
-                    obscureText: prompt.obscureInput,
+                    focusNode: _focusNode,
+                    obscureText: prompt.obscureInput && _obscurePassword,
                     keyboardType: numeric
                         ? const TextInputType.numberWithOptions(decimal: true)
                         : TextInputType.text,
@@ -1773,6 +2185,18 @@ class _GuidedInputPanelState extends State<_GuidedInputPanel> {
                         hintText: prompt.numericInputHint ??
                           UiText.current.get('guided.inputHint'),
                       border: const OutlineInputBorder(),
+                      suffixIcon: prompt.obscureInput
+                          ? IconButton(
+                              icon: Icon(_obscurePassword
+                                  ? Icons.visibility
+                                  : Icons.visibility_off),
+                              tooltip: _obscurePassword
+                                  ? 'Mostrar senha'
+                                  : 'Ocultar senha',
+                              onPressed: () => setState(
+                                  () => _obscurePassword = !_obscurePassword),
+                            )
+                          : null,
                     ),
                     minLines: 1,
                     maxLines: numeric || prompt.obscureInput ? 1 : 3,

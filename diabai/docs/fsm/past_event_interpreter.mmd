@@ -7,9 +7,13 @@ flowchart LR
   SIGNIFICANT -->|yes| CONTEXT[Known meals / insulin / exercise nearby]
   CONTEXT -->|already explained| DISCARD
   CONTEXT -->|unexplained| CLASSIFY[Classify by residual sign, velocity, acceleration, time of day]
-  CLASSIFY --> HYPOTHESIS[EventHypothesis: type, estimatedStart, estimatedPeak, confidence, magnitude, explanation, evidence, status=pending]
-  HYPOTHESIS --> STORE[(Local hypothesis log: initial knowledge-base record)]
-  HYPOTHESIS --> TIMELINE[Timeline: emoji marker, organizes/presents only, never interrupts the user]
+  CLASSIFY --> HYPOTHESIS[EventHypothesis: type, estimatedStart (CauseTime, detection time minus this cause type's latency), estimatedPeak (DetectionTime), effectWindowEnd (DetectionTime plus this cause type's effect duration), confidence, magnitude, explanation, evidence, status=pending]
+  HYPOTHESIS --> THREAD{Same-type hypothesis already tracked whose effectWindowEnd (physiological effect duration for that cause type) has not yet elapsed as of this reading's DetectionTime?}
+  THREAD -->|yes| MERGE[Merge into the same thread: keep the first reading's id/estimatedStart (CauseTime), adopt the latest peak/effectWindowEnd/magnitude/evidence and the highest confidence observed]
+  THREAD -->|no| NEWTHREAD[Start a new thread: id stays derived from this first reading; the prior thread's effect is treated as fully elapsed]
+  MERGE --> STORE[(Local hypothesis log: refreshes the thread's existing row while it is still pending; never touches a resolved row)]
+  NEWTHREAD --> STORE
+  STORE --> TIMELINE[Timeline: emoji marker, organizes/presents only, never interrupts the user]
   TIMELINE -->|user taps marker| NUNO[Nuno persona: proactive hypothesis conversation, see docs/fsm/nuno.mmd for free-reply scope]
   NUNO -->|Sim| CONFIRM[status=confirmed; hands off to the matching existing guided module]
   NUNO -->|Corrigir| CORRECT[User states what happened via the normal semantic-interpreter free-text path; status=corrected, type updated to the resolved EventType]

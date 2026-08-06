@@ -52,7 +52,7 @@ void main() {
       expect(hypotheses.single.type, HypothesisType.meal);
       expect(hypotheses.single.status, HypothesisStatus.pending);
       expect(hypotheses.single.magnitude, greaterThan(0));
-      expect(hypotheses.single.explanation, contains('refeição'));
+      expect(hypotheses.single.explanation, contains('Refeição'));
     });
 
     test('classifies a sudden unexplained fall as an insulin hypothesis', () {
@@ -227,12 +227,128 @@ void main() {
       expect(first.single.id, second.single.id);
     });
 
+    test(
+        'a sustained rise sampled across many growing refresh windows stays '
+        'one evolving hypothesis instead of stacking a duplicate per reading',
+        () {
+      // Mirrors GlucoseChartPage._refreshHypotheses calling analyze() again
+      // on every refresh as the visible window grows sample-by-sample —
+      // the exact real-world scenario that used to stack a fresh
+      // hypothesis (with a fresh id) on every reading of the same ongoing
+      // rise instead of tracking it as a single thread.
+      final series = _series(DateTime(2026, 1, 1, 12), [
+        100, 100, 100, 100, 100, 100, 100, // stable baseline
+        135, 155, 170, 182, 192, // sustained, still-rising divergence
+      ]);
+
+      const interpreter = PastEventInterpreter();
+      String? firstId;
+      var observedMultiSampleThread = false;
+      for (var end = 8; end <= series.samples.length; end++) {
+        final hypotheses = interpreter.analyze(
+          samples: series.samples.sublist(0, end),
+          estimates: series.estimates.sublist(0, end),
+        );
+        expect(hypotheses.length, 1,
+            reason: 'growing window up to sample $end should still track a '
+                'single thread, not spawn a duplicate');
+        final hypothesis = hypotheses.single;
+        firstId ??= hypothesis.id;
+        expect(hypothesis.id, firstId,
+            reason: "the thread's identity must not change as later, more "
+                'readings of the same rise arrive');
+        expect(hypothesis.type, HypothesisType.meal);
+        final observationCount = hypothesis.evidence['observationCount'];
+        if (observationCount != null && (observationCount as int) > 1) {
+          observedMultiSampleThread = true;
+          // The succinct explanation format (request #3a) always names the
+          // thread's own fixed CauseTime/estimatedStart, whether it's the
+          // first observation or a later refresh of the same thread —
+          // there's no separate "still observing" narrative anymore.
+          expect(hypothesis.evidence['firstObservedAt'], isNotNull);
+        }
+      }
+
+      expect(observedMultiSampleThread, isTrue,
+          reason: 'the growing window should merge at least two readings '
+              'into the same thread at some point');
+    });
+
+    test(
+        'estimatedStart and effectWindowEnd reflect the cause-type CauseTime '
+        'latency and EffectWindow duration', () {
+      final series = _series(DateTime(2026, 1, 1, 12), [
+        100, 100, 100, 100, 100, 100, 100,
+        170,
+      ]);
+
+      final hypothesis = const PastEventInterpreter()
+          .analyze(samples: series.samples, estimates: series.estimates)
+          .single;
+
+      expect(hypothesis.type, HypothesisType.meal);
+      expect(hypothesis.estimatedStart,
+          hypothesis.estimatedPeak.subtract(const Duration(minutes: 15)));
+      expect(hypothesis.effectWindowEnd,
+          hypothesis.estimatedPeak.add(const Duration(minutes: 180)));
+    });
+
+    test(
+        'a same-type reading farther apart than the old flat dedupe window '
+        'still merges into one thread as long as it is within the '
+        "cause's EffectWindow", () {
+      final series = _series(DateTime(2026, 1, 1, 12), [
+        100, 100, 100, 100, 100, 100, 100, // baseline (+0..+30min)
+        170, // meal rise at +35min
+        170, 170, 170, 170, // settles (+40..+55min)
+        230, // second rise at +60min: 25min after detection of the first
+        //    (beyond the old 15-minute flat dedupeWindow) but still well
+        //    inside meal's ~180-minute EffectWindow.
+      ]);
+
+      final hypotheses = const PastEventInterpreter().analyze(
+        samples: series.samples,
+        estimates: series.estimates,
+      );
+
+      expect(hypotheses.length, 1,
+          reason: "the second rise is still within the first reading's "
+              'EffectWindow, so it threads into the same hypothesis '
+              'instead of starting a new one');
+      expect(hypotheses.single.type, HypothesisType.meal);
+      expect(hypotheses.single.evidence['observationCount'],
+          greaterThanOrEqualTo(2));
+    });
+
+    test(
+        'a same-type reading arriving after the EffectWindow has elapsed '
+        'starts a new hypothesis instead of merging', () {
+      final series = _series(DateTime(2026, 1, 1, 12), [
+        100, 100, 100, 100, 100, 100, 100, // baseline (+0..+30min)
+        170, // meal rise at +35min; EffectWindow closes ~180min later
+        ...List.filled(42, 170.0), // flat, well past the EffectWindow
+        230, // an independent later rise the original meal can no longer
+        //    explain
+      ]);
+
+      final hypotheses = const PastEventInterpreter().analyze(
+        samples: series.samples,
+        estimates: series.estimates,
+      );
+
+      expect(hypotheses.length, 2,
+          reason: "the second rise arrives after the first reading's "
+              'EffectWindow has elapsed, so it can no longer explain new '
+              'divergence and a new, independent hypothesis is created');
+    });
+
     test('copyWith updates only the requested fields', () {
       final hypothesis = EventHypothesis(
         id: 'hyp_1',
         type: HypothesisType.meal,
         estimatedStart: _fixedStart,
         estimatedPeak: _fixedPeak,
+        effectWindowEnd: _fixedPeak.add(const Duration(hours: 3)),
         confidence: 0.7,
         magnitude: 20,
         explanation: 'test',

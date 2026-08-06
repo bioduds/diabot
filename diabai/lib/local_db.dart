@@ -35,7 +35,7 @@ class LocalDatabase
     final path = p.join(dir.path, 'diabai.db');
     final db = await openDatabase(
       path,
-      version: 5,
+      version: 7,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE events (
@@ -46,7 +46,8 @@ class LocalDatabase
             source TEXT NOT NULL DEFAULT 'userText',
             confidence REAL NOT NULL DEFAULT 1.0,
             derived INTEGER NOT NULL DEFAULT 0,
-            validated INTEGER NOT NULL DEFAULT 1
+            validated INTEGER NOT NULL DEFAULT 1,
+            event_id TEXT
           )
         ''');
         await db.execute('''
@@ -75,12 +76,14 @@ class LocalDatabase
             status TEXT NOT NULL,
             estimated_start TEXT NOT NULL,
             estimated_peak TEXT NOT NULL,
+            effect_window_end TEXT,
             confidence REAL NOT NULL,
             magnitude REAL NOT NULL,
             explanation TEXT NOT NULL,
             evidence TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            linked_event_id TEXT
           )
         ''');
       },
@@ -146,6 +149,21 @@ class LocalDatabase
             "UPDATE events SET source = 'cgm' WHERE payload LIKE '%\"_source\":\"cgm\"%'",
           );
         }
+        if (oldVersion < 6) {
+          await db.execute('ALTER TABLE events ADD COLUMN event_id TEXT');
+          await db.execute(
+            'ALTER TABLE hypotheses ADD COLUMN linked_event_id TEXT',
+          );
+        }
+        if (oldVersion < 7) {
+          // Nullable: existing rows predate the causal EffectWindow model
+          // (see EventHypothesis.effectWindowEnd) and fall back to
+          // estimated_peak (no extension) when read — see
+          // _hypothesisFromRow.
+          await db.execute(
+            'ALTER TABLE hypotheses ADD COLUMN effect_window_end TEXT',
+          );
+        }
       },
     );
     _db = db;
@@ -165,6 +183,7 @@ class LocalDatabase
     double confidence = 1.0,
     bool derived = false,
     bool validated = true,
+    String? eventId,
   }) async {
     final db = await _open();
     await db.insert('events', {
@@ -175,6 +194,7 @@ class LocalDatabase
       'confidence': confidence,
       'derived': derived ? 1 : 0,
       'validated': validated ? 1 : 0,
+      'event_id': eventId,
     });
   }
 
@@ -196,6 +216,7 @@ class LocalDatabase
       confidence: event.confidence,
       derived: event.derived,
       validated: event.validated,
+      eventId: event.id,
     );
   }
 
@@ -224,6 +245,29 @@ class LocalDatabase
     return db.query('events', orderBy: 'id DESC', limit: limit);
   }
 
+  /// Looks up one stored event by its [EventInstance.id] \u2014 used to
+  /// describe an already-resolved Timeline hypothesis's linked event for
+  /// review (see [HypothesisGateway.linkHypothesisToEvent]).
+  Future<Map<String, dynamic>?> eventById(String eventId) async {
+    final db = await _open();
+    final rows = await db.query(
+      'events',
+      where: 'event_id = ?',
+      whereArgs: [eventId],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : rows.single;
+  }
+
+  /// Deletes one stored event by its [EventInstance.id] \u2014 used when the
+  /// user chooses to redo an already-reviewed Timeline event from scratch
+  /// (see main.dart's timeline review flow) instead of keeping the old row
+  /// alongside the corrected one.
+  Future<void> deleteEventById(String eventId) async {
+    final db = await _open();
+    await db.delete('events', where: 'event_id = ?', whereArgs: [eventId]);
+  }
+
   /// Returns events of [type] logged within [within] of now, newest first.
   /// Used by the Emergency Engine to weigh recent insulin/exercise history.
   @override
@@ -238,6 +282,25 @@ class LocalDatabase
       where: 'type = ? AND created_at >= ?',
       whereArgs: [type, cutoff],
       orderBy: 'id DESC',
+    );
+  }
+
+  /// Returns events of [type] logged within [start]..[end] (inclusive),
+  /// oldest first \u2014 unlike [recentEventsOfType], the window isn't anchored
+  /// to now. Used by the drag-on-the-curve time picker
+  /// (glucose_time_picker.dart) to center its mini-graph on an arbitrary
+  /// moment, e.g. a confirmed hypothesis's own estimated time.
+  Future<List<Map<String, dynamic>>> eventsOfTypeBetween(
+    String type,
+    DateTime start,
+    DateTime end,
+  ) async {
+    final db = await _open();
+    return db.query(
+      'events',
+      where: 'type = ? AND created_at >= ? AND created_at <= ?',
+      whereArgs: [type, start.toIso8601String(), end.toIso8601String()],
+      orderBy: 'id ASC',
     );
   }
 
@@ -326,6 +389,7 @@ class LocalDatabase
         'status': hypothesis.status.name,
         'estimated_start': hypothesis.estimatedStart.toIso8601String(),
         'estimated_peak': hypothesis.estimatedPeak.toIso8601String(),
+        'effect_window_end': hypothesis.effectWindowEnd.toIso8601String(),
         'confidence': hypothesis.confidence,
         'magnitude': hypothesis.magnitude,
         'explanation': hypothesis.explanation,
@@ -336,6 +400,45 @@ class LocalDatabase
       // Never overwrites a row the user already resolved — see
       // [HypothesisGateway.upsertHypothesisIfAbsent].
       conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+  }
+
+  @override
+  Future<bool> refreshPendingHypothesis(EventHypothesis hypothesis) async {
+    final db = await _open();
+    final updated = await db.update(
+      'hypotheses',
+      {
+        'estimated_peak': hypothesis.estimatedPeak.toIso8601String(),
+        'effect_window_end': hypothesis.effectWindowEnd.toIso8601String(),
+        'confidence': hypothesis.confidence,
+        'magnitude': hypothesis.magnitude,
+        'explanation': hypothesis.explanation,
+        'evidence': jsonEncode(hypothesis.evidence),
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      // Never touches a row the user already resolved — see
+      // [HypothesisGateway.refreshPendingHypothesis].
+      where: 'id = ? AND status = ?',
+      whereArgs: [hypothesis.id, HypothesisStatus.pending.name],
+    );
+    return updated > 0;
+  }
+
+  @override
+  Future<void> prunePendingDuplicates(EventHypothesis merged) async {
+    final db = await _open();
+    await db.delete(
+      'hypotheses',
+      where: 'id != ? AND type = ? AND status = ? AND '
+          'estimated_peak >= ? AND estimated_peak <= ?',
+      whereArgs: [
+        merged.id,
+        merged.type.name,
+        HypothesisStatus.pending.name,
+        merged.estimatedStart.toIso8601String(),
+        merged.effectWindowEnd.toIso8601String(),
+      ],
     );
   }
 
@@ -351,6 +454,45 @@ class LocalDatabase
       {
         'status': status.name,
         if (type != null) 'type': type.name,
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  @override
+  Future<void> linkHypothesisToEvent(String id, String eventId) async {
+    final db = await _open();
+    await db.update(
+      'hypotheses',
+      {
+        'linked_event_id': eventId,
+        'updated_at': DateTime.now().toIso8601String(),
+      },
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  @override
+  Future<void> realignHypothesisTiming(String id, DateTime estimatedStart) async {
+    final db = await _open();
+    final rows = await db.query('hypotheses', where: 'id = ?', whereArgs: [id]);
+    if (rows.isEmpty) return;
+    final row = rows.first;
+    final oldStart = DateTime.parse(row['estimated_start'] as String);
+    final delta = estimatedStart.difference(oldStart);
+    if (delta == Duration.zero) return;
+    final effectWindowEndRaw = row['effect_window_end'] as String?;
+    final newEffectWindowEnd = effectWindowEndRaw != null
+        ? DateTime.parse(effectWindowEndRaw).add(delta)
+        : estimatedStart;
+    await db.update(
+      'hypotheses',
+      {
+        'estimated_start': estimatedStart.toIso8601String(),
+        'effect_window_end': newEffectWindowEnd.toIso8601String(),
         'updated_at': DateTime.now().toIso8601String(),
       },
       where: 'id = ?',
@@ -380,12 +522,21 @@ class LocalDatabase
     } catch (_) {
       evidence = const {};
     }
+    final estimatedPeak = DateTime.parse(row['estimated_peak'] as String);
+    final effectWindowEndRaw = row['effect_window_end'] as String?;
     return EventHypothesis(
       id: row['id'] as String,
       type: HypothesisType.values.byName(row['type'] as String),
       status: HypothesisStatus.values.byName(row['status'] as String),
+      linkedEventId: row['linked_event_id'] as String?,
       estimatedStart: DateTime.parse(row['estimated_start'] as String),
-      estimatedPeak: DateTime.parse(row['estimated_peak'] as String),
+      estimatedPeak: estimatedPeak,
+      // Rows stored before the EffectWindow model (see
+      // EventHypothesis.effectWindowEnd) have no column value — fall back
+      // to estimatedPeak (no extension) rather than crash.
+      effectWindowEnd: effectWindowEndRaw != null
+          ? DateTime.parse(effectWindowEndRaw)
+          : estimatedPeak,
       confidence: (row['confidence'] as num).toDouble(),
       magnitude: (row['magnitude'] as num).toDouble(),
       explanation: row['explanation'] as String,

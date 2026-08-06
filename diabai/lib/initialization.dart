@@ -10,6 +10,7 @@ class InitializationReply {
     this.kind = FieldKind.freeText,
     this.numericInputHint,
     this.unitOptions = const [],
+    this.shortTitle,
   });
 
   final String text;
@@ -27,13 +28,19 @@ class InitializationReply {
   /// Pre-selectable unit labels (e.g. ['kg', 'lb']) shown next to a
   /// [FieldKind.number] question. Empty when the question has no units.
   final List<String> unitOptions;
+
+  /// Short label (e.g. "Peso", "Sensor CGM") shown in the guided panel's
+  /// header instead of the generic "Perfil inicial" module title, for
+  /// every screen of the first-login initialization flow. Null falls back
+  /// to the module's default title.
+  final String? shortTitle;
 }
 
 /// The CGM sub-flow's own tiny step machine, asked right after the fixed
 /// profile questions. See docs/fsm/cgm.mmd: it only ever writes
 /// `cgmUsaServico`/`cgmProvider`/`cgmLibreLinkUpConectado` profile facts —
 /// no new EventType, EventStatus, or DiabAIGlobalState.
-enum _CgmStep { usage, provider, email, password, done }
+enum _CgmStep { usage, provider, providerOther, email, password, retryDecision, done }
 
 /// Collects and saves the local profile for the onboarding FSM entry point.
 /// It does not create events, evaluate health data, or choose global states.
@@ -54,17 +61,25 @@ class InitializationModule {
       'Monitor Contínuo de Glicose (um sensor que mede sua glicemia '
       'automaticamente ao longo do dia, sem picadas repetidas no dedo)?';
   static const _cgmProviderQuestion = 'Qual sensor de CGM você usa?';
+  static const _cgmProviderOtherQuestion =
+      'Qual o nome do sensor que você usa?';
   static const _cgmEmailQuestion =
       'Qual é o e-mail da sua conta LibreLinkUp?';
   static const _cgmPasswordQuestion =
       'Qual é a senha da sua conta LibreLinkUp? Ela é usada só para '
       'conectar ao servidor da Abbott/LibreLinkUp e fica guardada de forma '
       'criptografada apenas neste aparelho.';
+  static const _cgmRetryQuestion =
+      'Quer tentar de novo com outro e-mail/senha, ou continuar sem '
+      'conectar por enquanto? Você pode conectar depois pela tela de Perfil.';
+  static const _cgmRetryOptions = ['Tentar novamente', 'Continuar sem conectar'];
   static const _cgmProviderOptions = [
     'FreeStyle Libre 2',
     'FreeStyle Libre 2 Plus',
     'FreeStyle Libre 3',
-    'Dexcom',
+    'Dexcom G6',
+    'Dexcom G7',
+    'Medtronic Guardian',
     'Outro',
   ];
 
@@ -106,7 +121,19 @@ class InitializationModule {
       kind: reply.kind,
       numericInputHint: reply.numericInputHint,
       unitOptions: reply.unitOptions,
+      shortTitle: reply.shortTitle,
     );
+  }
+
+  /// Re-enters the CGM connection sub-step (asking for LibreLinkUp
+  /// email/password again) after onboarding has already finished — used
+  /// by the post-onboarding "could not connect" screen's "Tentar
+  /// conectar de novo" action (see docs/fsm/cgm.mmd). Requires [begin] to
+  /// have run at least once this session, so [_profile] is already set.
+  Future<InitializationReply> retryCgmConnection() async {
+    _cgmEmail = null;
+    _cgmStep = _CgmStep.email;
+    return _nextReply();
   }
 
   Future<InitializationReply> respond(String rawText) async {
@@ -160,6 +187,11 @@ class InitializationModule {
     return normalized == 's' || normalized.startsWith('sim');
   }
 
+  bool _isRetry(String answer) {
+    final normalized = answer.trim().toLowerCase();
+    return normalized.contains('tentar') || _isYes(normalized);
+  }
+
   bool _isLibreProvider(String provider) =>
       provider.trim().toLowerCase().contains('libre');
 
@@ -172,6 +204,10 @@ class InitializationModule {
         _cgmStep = usesService ? _CgmStep.provider : _CgmStep.done;
         return _nextReply();
       case _CgmStep.provider:
+        if (answer.trim().toLowerCase() == 'outro') {
+          _cgmStep = _CgmStep.providerOther;
+          return _nextReply();
+        }
         profile.cgmProvider = answer;
         if (_isLibreProvider(answer)) {
           _cgmStep = _CgmStep.email;
@@ -180,12 +216,26 @@ class InitializationModule {
           _cgmStep = _CgmStep.done;
         }
         return _nextReply();
+      case _CgmStep.providerOther:
+        profile.cgmProvider = answer;
+        profile.cgmLibreLinkUpConectado = 'não';
+        _cgmStep = _CgmStep.done;
+        return _nextReply();
       case _CgmStep.email:
         _cgmEmail = answer;
         _cgmStep = _CgmStep.password;
         return _nextReply();
       case _CgmStep.password:
         return _attemptLibreLinkUpConnection(profile, password: answer);
+      case _CgmStep.retryDecision:
+        if (_isRetry(answer)) {
+          _cgmEmail = null;
+          _cgmStep = _CgmStep.email;
+          return _nextReply();
+        }
+        profile.cgmLibreLinkUpConectado = 'não';
+        _cgmStep = _CgmStep.done;
+        return _nextReply();
       case _CgmStep.done:
         return _nextReply();
     }
@@ -196,7 +246,6 @@ class InitializationModule {
     required String password,
   }) async {
     final email = _cgmEmail ?? '';
-    String notice;
     try {
       final result = await _libreLinkUpClient.connect(
         email: email,
@@ -210,22 +259,33 @@ class InitializationModule {
         patientName: result.patient.fullName,
       );
       profile.cgmLibreLinkUpConectado = 'sim';
+      _cgmStep = _CgmStep.done;
       final name = result.patient.fullName;
-      notice = 'Conectado ao LibreLinkUp com sucesso!'
+      final notice = 'Conectado ao LibreLinkUp com sucesso!'
           '${name.isNotEmpty ? ' Encontrei os dados de $name.' : ''} '
           'Vou sincronizar sua glicemia automaticamente a partir de agora.';
+      final reply = await _nextReply();
+      return InitializationReply(
+        text: '$notice\n\n${reply.text}',
+        quickReplies: reply.quickReplies,
+        kind: reply.kind,
+        numericInputHint: reply.numericInputHint,
+        unitOptions: reply.unitOptions,
+        shortTitle: reply.shortTitle,
+      );
     } on LibreLinkUpException catch (e) {
-      profile.cgmLibreLinkUpConectado = 'não';
-      notice = 'Não consegui conectar ao LibreLinkUp: ${e.message} '
-          'Você pode tentar novamente depois pela tela de Perfil. Por '
-          'enquanto vamos seguir só com o registro manual de glicemia.';
+      _cgmStep = _CgmStep.retryDecision;
+      final notice = 'Não consegui conectar ao LibreLinkUp: ${e.message}';
+      final reply = await _nextReply();
+      return InitializationReply(
+        text: '$notice\n\n${reply.text}',
+        quickReplies: reply.quickReplies,
+        kind: reply.kind,
+        numericInputHint: reply.numericInputHint,
+        unitOptions: reply.unitOptions,
+        shortTitle: reply.shortTitle,
+      );
     }
-    _cgmStep = _CgmStep.done;
-    final reply = await _nextReply();
-    return InitializationReply(
-      text: '$notice\n\n${reply.text}',
-      quickReplies: reply.quickReplies,
-    );
   }
 
   Future<InitializationReply> _nextReply() async {
@@ -236,6 +296,7 @@ class InitializationModule {
         kind: question.kind,
         numericInputHint: question.numericInputHint,
         unitOptions: question.unitOptions,
+        shortTitle: question.shortTitle,
       );
     }
 
@@ -244,18 +305,38 @@ class InitializationModule {
         return const InitializationReply(
           text: _cgmUsageQuestion,
           quickReplies: ['Sim', 'Não'],
+          kind: FieldKind.yesNo,
+          shortTitle: 'CGM',
         );
       case _CgmStep.provider:
         return const InitializationReply(
           text: _cgmProviderQuestion,
           quickReplies: _cgmProviderOptions,
+          kind: FieldKind.option,
+          shortTitle: 'Sensor CGM',
+        );
+      case _CgmStep.providerOther:
+        return const InitializationReply(
+          text: _cgmProviderOtherQuestion,
+          shortTitle: 'Sensor CGM',
         );
       case _CgmStep.email:
-        return const InitializationReply(text: _cgmEmailQuestion);
+        return const InitializationReply(
+          text: _cgmEmailQuestion,
+          shortTitle: 'E-mail LibreLinkUp',
+        );
       case _CgmStep.password:
         return const InitializationReply(
           text: _cgmPasswordQuestion,
           obscureNextAnswer: true,
+          shortTitle: 'Senha LibreLinkUp',
+        );
+      case _CgmStep.retryDecision:
+        return const InitializationReply(
+          text: _cgmRetryQuestion,
+          quickReplies: _cgmRetryOptions,
+          kind: FieldKind.option,
+          shortTitle: 'Conectar CGM',
         );
       case _CgmStep.done:
         break;

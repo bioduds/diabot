@@ -1,0 +1,15 @@
+%% fsm-contract: {"eventType":"insulin","askedFields":["occurredAt","dose","insulinType","doseContext","actionDurationHours"],"path":["occurredAt","dose","insulinType","doseContext","actionDurationHours","optional-context","stored"],"globalStateChange":false,"lifecycleChange":false,"emergencyImpact":true,"priorityImpact":false,"doseRecommendation":false}
+%% Same shape as meal.mmd's fsm-contract; not yet enforced by test/fsm_mermaid_contract_test.dart.
+flowchart TD
+  INPUT[Insulin event from user or parser] --> TIME[Ask if it happened now or at another time]
+  TIME --> DOSE[Ask units applied]
+  DOSE --> TYPE[Ask insulin type: rapida, basal, or pre-misturada]
+  TYPE --> DOSE_CONTEXT[Ask if dose was correction, meal-coverage, or basal/routine]
+  DOSE_CONTEXT --> ACTION_DURATION[Ask expected action duration in hours]
+  ACTION_DURATION --> CONTEXT[Offer optional context]
+  CONTEXT --> STORE[Store insulin event]
+  STORE --> SIGNAL[Feeds recentInsulin signal to EmergencyEngine]
+
+  NOTE[Generic missing-field collection only: no new DiabAIGlobalState, EventStatus, priority rule, dose calculation, or medical recommendation. insulinType, doseContext, and actionDurationHours are plain FieldSpec entries like dose, so they can also be pre-filled passively from the parser's entities before being asked.]
+  TIME_NOTE[occurredAt is the shared eventTimeField (see events.dart) prepended generically by KnowledgeEngine.missingFields to every event type's own fields — not insulin-specific. Answering it also confirms/overwrites EventInstance.createdAt with the real clock time before storage.]
+  BACKLOG[Roadmap backlog, not implemented: insulin-on-board tracking, dedicated history view, dose suggestions. Any of these that add dose calculation or clinical reasoning stay out of scope per AGENTS.md.]

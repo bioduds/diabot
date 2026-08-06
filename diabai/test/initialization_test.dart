@@ -37,6 +37,34 @@ class _FakeLibreLinkUpClient extends LibreLinkUpClient {
   }
 }
 
+/// Fails the first connection attempt (wrong password), then succeeds on
+/// any subsequent attempt — used to test the onboarding retry step.
+class _FakeRetryingLibreLinkUpClient extends LibreLinkUpClient {
+  bool _hasFailedOnce = false;
+
+  @override
+  Future<LibreLinkUpConnectResult> connect({
+    required String email,
+    required String password,
+    String regionCode = 'LA',
+  }) async {
+    if (!_hasFailedOnce) {
+      _hasFailedOnce = true;
+      throw LibreLinkUpException('E-mail ou senha inválidos.');
+    }
+    return LibreLinkUpConnectResult(
+      region: LibreLinkUpRegion.fromCode('US'),
+      token: 'token-123',
+      accountIdHash: 'hash-123',
+      patient: const LibreLinkUpPatient(
+        patientId: 'patient-1',
+        firstName: 'Ana',
+        lastName: '',
+      ),
+    );
+  }
+}
+
 class _FakeCredentialStore extends LibreLinkUpCredentialStore {
   final saved = <String, String>{};
 
@@ -206,8 +234,8 @@ void main() {
     expect(credentialStore.saved['patientId'], 'patient-1');
   });
 
-  test('CGM sub-flow reports a failed LibreLinkUp connection and still '
-      'completes onboarding', () async {
+  test('CGM sub-flow reports a failed LibreLinkUp connection and offers a '
+      'retry before completing onboarding', () async {
     final module = InitializationModule(
       libreLinkUpClient:
           _FakeLibreLinkUpClient.failure('E-mail ou senha inválidos.'),
@@ -217,11 +245,43 @@ void main() {
     await module.respond('Sim');
     await module.respond('FreeStyle Libre 2');
     await module.respond('ana@example.com');
-    final done = await module.respond('wrong-password');
+    final afterFailure = await module.respond('wrong-password');
 
+    expect(module.isComplete, isFalse);
+    expect(afterFailure.text, contains('Não consegui conectar'));
+    expect(afterFailure.quickReplies,
+        contains('Tentar novamente'));
+    expect((await UserProfile.load()).cgmLibreLinkUpConectado, isEmpty);
+
+    final done = await module.respond('Continuar sem conectar');
     expect(module.isComplete, isTrue);
-    expect(done.text, contains('Não consegui conectar'));
     expect(done.text, contains('Perfil inicial salvo'));
     expect((await UserProfile.load()).cgmLibreLinkUpConectado, 'não');
+  });
+
+  test('CGM sub-flow lets the user retry credentials and connect '
+      'successfully the second time', () async {
+    final credentialStore = _FakeCredentialStore();
+    final module = InitializationModule(
+      libreLinkUpClient: _FakeRetryingLibreLinkUpClient(),
+      libreLinkUpCredentialStore: credentialStore,
+    );
+    await _completeFixedQuestions(module);
+    await module.respond('Sim');
+    await module.respond('FreeStyle Libre 2');
+    await module.respond('ana@example.com');
+    final afterFailure = await module.respond('wrong-password');
+    expect(afterFailure.quickReplies, contains('Tentar novamente'));
+
+    final emailReply = await module.respond('Tentar novamente');
+    expect(emailReply.text, contains('e-mail'));
+    final passwordReply = await module.respond('ana@example.com');
+    expect(passwordReply.obscureNextAnswer, isTrue);
+    final done = await module.respond('correct-password');
+
+    expect(module.isComplete, isTrue);
+    expect(done.text, contains('Conectado ao LibreLinkUp com sucesso'));
+    expect((await UserProfile.load()).cgmLibreLinkUpConectado, 'sim');
+    expect(credentialStore.saved['password'], 'correct-password');
   });
 }

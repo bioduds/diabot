@@ -95,4 +95,29 @@ class KalmanFilter2D {
     _p10 = p10;
     _p11 = p11;
   }
+
+  /// Corrects the state with a direct measurement [vz] of the velocity
+  /// state (`H = [0, 1]`) instead of the value \u2014 e.g. a CGM API's own
+  /// reported rate-of-change/trend, fused in as an independent observation
+  /// of the same rate the value updates only infer indirectly.
+  /// [velocityMeasurementNoise] is that observation's own variance (R).
+  void updateVelocity(double vz, double velocityMeasurementNoise) {
+    final y = vz - _x1;
+    final s = _p11 + velocityMeasurementNoise;
+    final k0 = _p01 / s;
+    final k1 = _p11 / s;
+
+    _x0 += k0 * y;
+    _x1 += k1 * y;
+
+    final p00 = _p00 - k0 * _p10;
+    final p01 = _p01 - k0 * _p11;
+    final p10 = (1 - k1) * _p10;
+    final p11 = (1 - k1) * _p11;
+
+    _p00 = p00;
+    _p01 = p01;
+    _p10 = p10;
+    _p11 = p11;
+  }
 }

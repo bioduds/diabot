@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="diabot/assets/images/DiabAI.png" alt="DiabAI logo" width="220" />
+  <img src="diabai/assets/images/DiabAI.png" alt="DiabAI logo" width="220" />
 </p>
 
 # DiabAI and GlycoGuide
@@ -7,7 +7,7 @@
 This repository contains two independent diabetes-support prototypes. They do not share an API, database, or runtime:
 
 - **GlycoGuide** (`app/`) is a local FastAPI web application that stores CGM and self-reported data, optionally syncs LibreLinkUp, and uses Ollama for educational pattern discussion.
-- **DiabAI** (`diabot/`) is an Android-focused Flutter application with a deterministic finite-state-machine (FSM) kernel. It logs events locally, accepts structured extraction from an optional on-device model, provides retrieval-only education answers, and supports on-device speech-to-text.
+- **DiabAI** (`diabai/`) is an Android-focused Flutter application with a deterministic finite-state-machine (FSM) kernel. It logs events locally, accepts structured extraction from an optional on-device model, provides retrieval-only education answers, and supports on-device speech-to-text.
 
 Neither application is a medical device. They do not diagnose conditions, calculate insulin doses, prescribe treatment, or replace an emergency plan or a qualified care team.
 
@@ -74,20 +74,20 @@ DiabAI is not a Flutter client for GlycoGuide. It is a separate Android-first pr
 ### Current capabilities
 
 - Firebase Google/email authentication and a local profile collected through the FSM onboarding entry point.
-- Glicemia (the glucose chart) is the app's home screen; typed input, quick replies, on-device speech-to-text, and the Nuno chat live in a panel that slides up over it and retracts with a collapse button — see [diabot/README.md](diabot/README.md#navigation-glicemia-is-home-nuno-is-a-sliding-overlay).
+- Glicemia (the glucose chart) is the app's home screen; typed input, quick replies, on-device speech-to-text, and the Nuno chat live in a panel that slides up over it and retracts with a collapse button — see [diabai/README.md](diabai/README.md#navigation-glicemia-is-home-nuno-is-a-sliding-overlay).
 - A deterministic FSM that handles glucose, meals, insulin, exercise, symptoms, illness, ketones, medication, CGM, profile, and question events.
 - Missing-field collection, optional `when`/`where`/`what happened before` context, explicit event priority, event lifecycle tracking, and append-only FSM audit records.
 - Composed emergency pre-emption using available signals, followed by resume of pending events. This is non-clinically-validated conversational guidance, not emergency dispatch or medical decision support.
 - Local SQLite event logs and RAG retrieval for educational questions.
-- Optional LibreLinkUp CGM sync ([diabot/lib/cgm_sync_engine.dart](diabot/lib/cgm_sync_engine.dart)) and a read-only AGP-style glucose chart ([diabot/lib/glucose_chart.dart](diabot/lib/glucose_chart.dart)) over local event history — this chart is the app's home screen, documented in [diabot/README.md](diabot/README.md#glucose-chart-and-cgm-sync).
-- A Kalman-filter glucose estimator ([diabot/lib/cgm/glucose_estimator.dart](diabot/lib/cgm/glucose_estimator.dart)) that compensates part of the sensor's interstitial lag. The chart always shows the sensor's raw reading and this estimate side by side with a color-coded confidence indicator, plus a dashed +5/+10/+15-minute forecast extrapolated from the filter's own state — not a diagnostic prediction, and never hiding either number.
+- Optional LibreLinkUp CGM sync ([diabai/lib/cgm_sync_engine.dart](diabai/lib/cgm_sync_engine.dart)) and a read-only AGP-style glucose chart ([diabai/lib/glucose_chart.dart](diabai/lib/glucose_chart.dart)) over local event history — this chart is the app's home screen, documented in [diabai/README.md](diabai/README.md#glucose-chart-and-cgm-sync).
+- A Kalman-filter glucose estimator ([diabai/lib/cgm/glucose_estimator.dart](diabai/lib/cgm/glucose_estimator.dart)) that compensates part of the sensor's interstitial lag. The chart always shows the sensor's raw reading and this estimate side by side with a color-coded confidence indicator, plus a dashed +5/+10/+15-minute forecast extrapolated from the filter's own state — not a diagnostic prediction, and never hiding either number.
 
 ### Deliberate limits
 
 - No insulin-dose calculation, treatment recommendation, emergency calling, trend/pattern analysis beyond the chart's template summary, CSV export, or cloud sync of health records.
 - `cgm` and `profile` events are recognized but do not yet have complete collection workflows.
 - The external Gemma model only extracts structured events. It does not generate the user-facing conversation. Without it, deterministic quick replies and bare numeric glucose entries still work; unconstrained free text is clarified instead.
-- When the interpreter finds no matching event (`unknown`), its `free_reply` text is shaped by the **Nuno** persona (calm, objective, never alarmist or childish, explains when asked) — see [diabot/docs/fsm/nuno.mmd](diabot/docs/fsm/nuno.mmd). This only affects wording in that one free-text case; it never changes state, lifecycle, or gives medical guidance. DiabAI is the product name, Nuno is the conversational assistant.
+- When the interpreter finds no matching event (`unknown`), its `free_reply` text is shaped by the **Nuno** persona (calm, objective, never alarmist or childish, explains when asked) — see [diabai/docs/fsm/nuno.mmd](diabai/docs/fsm/nuno.mmd). This only affects wording in that one free-text case; it never changes state, lifecycle, or gives medical guidance. DiabAI is the product name, Nuno is the conversational assistant.
 - Free-text input first passes through a generic on-device semantic interpreter, which returns structured event candidates and fields for the deterministic Kernel. When an interpretation is ambiguous or below the confidence threshold, `Outras opções` opens the generic event menu without discarding a pending event, so the user can change topic or register another event.
 - When a meal is identified, the deterministic Meal module first distinguishes food already consumed from a planned meal. Recorded meals collect stated carbohydrate grams and optional food details; planned meals collect intended foods and an optional user-provided carbohydrate estimate. It records context only and never calculates or recommends an insulin dose.
 - DiabAI preserves its local profile, SQLite data, and authentication session across build updates. Debug builds expose a confirmed in-app action to erase local test data when a clean onboarding run is needed.
@@ -105,7 +105,7 @@ DiabAI does **not** require Ollama.
 ### Run and test
 
 ```bash
-cd diabot
+cd diabai
 flutter pub get
 flutter test test/orchestrator_test.dart
 flutter test test/fsm_mermaid_contract_test.dart
@@ -128,7 +128,7 @@ Each event has an ID, source, lifecycle status, and audit trail. A completed eve
 
 On first login without a saved profile, the FSM enters `onboarding` only after the local model is ready. It gathers and saves the profile locally, then transitions to `idle`. Later logins detect the saved profile and enter `idle` directly.
 
-The persisted Mermaid specifications live in [diabot/docs/fsm](diabot/docs/fsm). Each map contains a machine-readable contract checked against the Dart FSM declarations by `flutter test test/fsm_mermaid_contract_test.dart`. This verifies the declared states, event types, priority, lifecycle edges, and emergency contract, rather than attempting to infer arbitrary diagram layout.
+The persisted Mermaid specifications live in [diabai/docs/fsm](diabai/docs/fsm). Each map contains a machine-readable contract checked against the Dart FSM declarations by `flutter test test/fsm_mermaid_contract_test.dart`. This verifies the declared states, event types, priority, lifecycle edges, and emergency contract, rather than attempting to infer arbitrary diagram layout.
 
 The Time Engine is a separate DiabAI module that derives context from the current event stack and timestamped local history across 15-minute, 1-hour, 4-hour, 12-hour, and 24-hour windows. It supplies temporal facts to the Emergency Engine; temporal Priority and Knowledge rules must first be specified in Mermaid before implementation.
 
@@ -140,7 +140,7 @@ The DiabAI Profile View is a known-only projection of that local context. It pla
 
 An authenticated photo is shown when available. The user may alternatively select a local avatar from the camera or gallery; the selected file remains on the device and is only stored as a local profile reference. This is the only interaction in the view: it does not collect health facts or turn the screen into a profile questionnaire.
 
-![Validated Profile View on a Galaxy A56](diabot/docs/images/profile-view-a56.png)
+![Validated Profile View on a Galaxy A56](diabai/docs/images/profile-view-a56.png)
 
 The screenshot was captured during device validation and anonymized before inclusion: identity and health values are redacted while the rendered hierarchy remains visible.
 
@@ -150,14 +150,14 @@ The current kernel is designed to grow by modular event behavior without a new a
 
 Do not create event-specific global states such as meal or glucose states. Classify a feature as a new `EventType`, `FieldSpec`, `EmergencyEngine` rule, `PriorityEngine` rule, or `KnowledgeEngine`-only change. Change global states, the lifecycle diagram, or the emergency diagram only when that classification requires it. The full agent workflow is in [AGENTS.md](AGENTS.md).
 
-For an implementation handoff, run `cd diabot && docs/create_fsm_handoff_zip.sh`. It produces [diabot/docs/zip/diabai-fsm-handoff.zip](diabot/docs/zip/diabai-fsm-handoff.zip) with the diagrams, implementation references, and tests required to understand and verify the FSM.
+For an implementation handoff, run `cd diabai && docs/create_fsm_handoff_zip.sh`. It produces [diabai/docs/zip/diabai-fsm-handoff.zip](diabai/docs/zip/diabai-fsm-handoff.zip) with the diagrams, implementation references, and tests required to understand and verify the FSM.
 
 ## Repository layout
 
 ```text
 app/                 GlycoGuide FastAPI application
 data/                GlycoGuide local database and runtime data
-diabot/              Independent Flutter Android-first application
+diabai/              Independent Flutter Android-first application
   lib/events.dart    FSM data model, engines, schemas, and suggestions
   lib/orchestrator.dart
                      FSM transitions and event resolution

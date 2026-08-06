@@ -1,6 +1,19 @@
 import 'dart:math' as math;
 
+import '../librelinkup.dart';
 import 'kalman_filter.dart';
+
+/// Rough rate-of-change prior for each of LibreLinkUp's 5 trend buckets,
+/// mg/dL per minute \u2014 fused into the filter's velocity state as an extra
+/// measurement (see [GlucoseEstimator.trendVelocityNoise]), on top of (not
+/// instead of) whatever the value readings themselves already imply.
+const Map<CgmTrend, double> _trendVelocityMgdlPerMin = {
+  CgmTrend.fallingQuickly: -3.5,
+  CgmTrend.falling: -2.0,
+  CgmTrend.stable: 0.0,
+  CgmTrend.rising: 2.0,
+  CgmTrend.risingQuickly: 3.5,
+};
 
 /// Three-tier bucketing of [GlucoseEstimate.sigma] into a human label \u2014
 /// independent of [GlucoseEstimate.confidence] (which is the finer-grained,
@@ -81,6 +94,7 @@ class GlucoseEstimator {
     this.processNoiseVelocity = 0.02,
     this.lagMinutes = 10.0,
     this.confidenceToleranceMgdl = 5.0,
+    this.trendVelocityNoise = 4.0,
   });
 
   /// R \u2014 measurement noise variance, mg/dL\u00b2 (9 \u2192 \u03c3 \u2248 3 mg/dL).
@@ -100,13 +114,21 @@ class GlucoseEstimator {
   /// confidence percentage \u2014 see [GlucoseEstimate.confidence].
   final double confidenceToleranceMgdl;
 
+  /// R for the trend-arrow velocity prior (mg/dL per minute)\u00b2 \u2014 wide
+  /// enough to reflect that each [CgmTrend] bucket is a coarse category,
+  /// not a precise rate, but still tight enough to pull the filter's
+  /// velocity state toward it (see [_trendVelocityMgdlPerMin]).
+  final double trendVelocityNoise;
+
   KalmanFilter2D? _filter;
   DateTime? _lastReadingAt;
 
   /// Feeds one new reading through predict \u2192 update \u2192 lag compensation.
   /// Readings must be supplied in non-decreasing timestamp order; call
-  /// [reset] first if starting over (e.g. a new sensor).
-  GlucoseEstimate addReading(double mgdl, DateTime at) {
+  /// [reset] first if starting over (e.g. a new sensor). [trend], when the
+  /// API reports one for this reading, is fused into the velocity state as
+  /// an extra prior on top of what the value updates alone would infer.
+  GlucoseEstimate addReading(double mgdl, DateTime at, {CgmTrend? trend}) {
     final filter = _filter;
     final lastAt = _lastReadingAt;
     if (filter == null || lastAt == null) {
@@ -117,6 +139,9 @@ class GlucoseEstimator {
         processNoiseVelocity: processNoiseVelocity,
       );
       fresh.update(mgdl);
+      if (trend != null) {
+        fresh.updateVelocity(_trendVelocityMgdlPerMin[trend]!, trendVelocityNoise);
+      }
       _filter = fresh;
       _lastReadingAt = at;
       return _estimateFrom(fresh, mgdl, residual: 0);
@@ -126,6 +151,9 @@ class GlucoseEstimator {
     if (dtMinutes > 0) filter.predict(dtMinutes);
     final predictedValue = filter.value;
     filter.update(mgdl);
+    if (trend != null) {
+      filter.updateVelocity(_trendVelocityMgdlPerMin[trend]!, trendVelocityNoise);
+    }
     _lastReadingAt = at;
     return _estimateFrom(filter, mgdl, residual: mgdl - predictedValue);
   }
@@ -159,6 +187,35 @@ class GlucoseEstimator {
   double _confidenceFromSigma(double sigma) {
     if (sigma <= 0) return 1.0;
     return _erf(confidenceToleranceMgdl / (sigma * math.sqrt2)).clamp(0.0, 1.0);
+  }
+
+  /// Projects the estimate [additionalMinutes] further ahead than what
+  /// [GlucoseEstimate.estimatedNow] already compensates \u2014 i.e. total
+  /// horizon = [lagMinutes] + [additionalMinutes] \u2014 for the FUTURO
+  /// reading. Same constant-velocity Kalman state-transition [addReading]
+  /// itself uses to reach `estimatedNow`, never a new/independent model.
+  /// Must be called after at least one [addReading].
+  GlucoseEstimate forecast(double additionalMinutes) {
+    final filter = _filter;
+    if (filter == null) {
+      throw StateError('forecast() requires at least one addReading() call.');
+    }
+    final horizon = lagMinutes + additionalMinutes;
+    final value = filter.value + filter.velocity * horizon;
+    final variance = filter.valueVariance +
+        2 * horizon * filter.valueVelocityCovariance +
+        horizon * horizon * filter.velocityVariance;
+    final sigma = math.sqrt(math.max(variance, 0));
+    return GlucoseEstimate(
+      observed: value,
+      estimated: value,
+      estimatedNow: value,
+      velocity: filter.velocity,
+      confidence: _confidenceFromSigma(sigma),
+      sigma: sigma,
+      lagMinutes: horizon,
+      residual: 0,
+    );
   }
 
   /// Resets all state \u2014 the next [addReading] starts a brand-new filter.

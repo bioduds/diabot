@@ -15,3 +15,6 @@ data/.fernet_key
 # Editor / OS
 .DS_Store
 .vscode/
+
+# Scratch notes
+tmp/

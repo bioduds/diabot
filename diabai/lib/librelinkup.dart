@@ -205,6 +205,20 @@ const Map<int, String> _trendLabels = {
   5: 'rising quickly',
 };
 
+/// Recovers a [CgmTrend] from the free-text label CgmSyncEngine persists
+/// per reading (see [LibreLinkUpReading.trend]) \u2014 lets callers with only
+/// locally-stored history (not the live [LibreLinkUpSnapshot]) still know
+/// each reading's own trend.
+const Map<String, CgmTrend> _trendByLabel = {
+  'falling quickly': CgmTrend.fallingQuickly,
+  'falling': CgmTrend.falling,
+  'stable': CgmTrend.stable,
+  'rising': CgmTrend.rising,
+  'rising quickly': CgmTrend.risingQuickly,
+};
+
+CgmTrend? cgmTrendFromLabel(String? label) => label == null ? null : _trendByLabel[label];
+
 /// Thin REST client for the LibreLinkUp API used by the FreeStyle Libre
 /// Android/iOS "LibreLinkUp" follower app. See docs/fsm/cgm.mmd.
 class LibreLinkUpClient {

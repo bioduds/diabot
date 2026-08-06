@@ -2,7 +2,7 @@
 
 ## Repository Boundaries
 
-- This repository has two independent applications: GlycoGuide (`app/`, FastAPI/Python) and DiabAI (`diabot/`, Flutter). They do not share an API, runtime, database, or model pipeline. Do not wire one into the other without an explicit request.
+- This repository has two independent applications: GlycoGuide (`app/`, FastAPI/Python) and DiabAI (`diabai/`, Flutter). They do not share an API, runtime, database, or model pipeline. Do not wire one into the other without an explicit request.
 - Read the [root README](README.md) before changing behavior that affects data handling, model use, or medical-safety messaging.
 - Neither application is medical decision support. Do not add insulin-dose calculations, treatment prescriptions, diagnostic claims, or emergency-dispatch behavior.
 
@@ -13,17 +13,17 @@
 
 ## DiabAI
 
-- The deterministic FSM is the authority; the on-device LLM only extracts structured events. Keep state transitions in [diabot/lib/orchestrator.dart](diabot/lib/orchestrator.dart) generic over global state and missing fields. Put event schemas, priority, validation, and emergency rules in [diabot/lib/events.dart](diabot/lib/events.dart).
-- When changing the FSM contract, update the affected Mermaid specification in [diabot/docs/fsm](diabot/docs/fsm), the contract test, and behavior tests together. Run:
+- The deterministic FSM is the authority; the on-device LLM only extracts structured events. Keep state transitions in [diabai/lib/orchestrator.dart](diabai/lib/orchestrator.dart) generic over global state and missing fields. Put event schemas, priority, validation, and emergency rules in [diabai/lib/events.dart](diabai/lib/events.dart).
+- When changing the FSM contract, update the affected Mermaid specification in [diabai/docs/fsm](diabai/docs/fsm), the contract test, and behavior tests together. Run:
 
   ```bash
-  cd diabot
+  cd diabai
   flutter test test/orchestrator_test.dart test/fsm_mermaid_contract_test.dart
   ```
 
-- Build number changes (`version`'s `+N` in `diabot/pubspec.yaml`) intentionally clear DiabAI local preferences, auth state, and SQLite data at launch. Bump it before creating a new device-test APK; do not bump it for source-only checks.
+- Build number changes (`version`'s `+N` in `diabai/pubspec.yaml`) intentionally clear DiabAI local preferences, auth state, and SQLite data at launch. Bump it before creating a new device-test APK; do not bump it for source-only checks.
 - The external GGUF is manually loaded from Android storage. Keep loading manual and avoid concurrent native model loading because RAG, STT, and the large GGUF can exceed device memory.
-- Do not commit model weights or generated Flutter build outputs. When changing the RAG knowledge base, regenerate embeddings with [diabot/tools/precompute_embeddings.py](diabot/tools/precompute_embeddings.py) using its documented llama.cpp-compatible toolchain.
+- Do not commit model weights or generated Flutter build outputs. When changing the RAG knowledge base, regenerate embeddings with [diabai/tools/precompute_embeddings.py](diabai/tools/precompute_embeddings.py) using its documented llama.cpp-compatible toolchain.
 
 ## DiabAI FSM Evolution
 
@@ -114,5 +114,5 @@ Se não, NÃO altere emergency.mmd.
 
 ## Handoff and Validation
 
-- Regenerate the programmer handoff ZIP after changing its inputs: `cd diabot && docs/create_fsm_handoff_zip.sh`.
+- Regenerate the programmer handoff ZIP after changing its inputs: `cd diabai && docs/create_fsm_handoff_zip.sh`.
 - For changes that touch Flutter source, run focused tests first, then `flutter analyze` on touched files. Preserve the existing local-storage and audit-gateway boundaries.

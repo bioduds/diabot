@@ -20,6 +20,12 @@ class OrchestratorReply {
   final FieldKind? guidedFieldKind;
   final String? guidedModuleId;
 
+  /// Short label (e.g. "Peso", "Sensor CGM") the guided panel should show
+  /// in its header instead of the module's generic title — set only by
+  /// the onboarding/CGM sub-flow (see [InitializationReply.shortTitle]).
+  /// Null everywhere else, falling back to the module's own title.
+  final String? guidedShortTitle;
+
   /// Pre-selectable unit labels (e.g. ['kg', 'lb']) shown next to a
   /// numeric guided question. Empty when the question has no units.
   final List<String> unitOptions;
@@ -28,14 +34,23 @@ class OrchestratorReply {
   /// docs/fsm/cgm.mmd): the UI must not echo the typed answer.
   final bool obscureNextAnswer;
 
+  /// The pending event's own [EventInstance.createdAt] when
+  /// [guidedFieldKind] is [FieldKind.time] — lets the drag-on-the-curve
+  /// time picker default its marker to when the event was actually
+  /// detected/started (e.g. a confirmed hypothesis's estimated moment)
+  /// instead of always defaulting to now. Null for every other field kind.
+  final DateTime? guidedEventCreatedAt;
+
   const OrchestratorReply(
     this.text, {
     this.quickReplies,
     this.numericInputHint,
     this.guidedFieldKind,
     this.guidedModuleId,
+    this.guidedShortTitle,
     this.unitOptions = const [],
     this.obscureNextAnswer = false,
+    this.guidedEventCreatedAt,
   });
 }
 
@@ -96,6 +111,14 @@ class ConversationOrchestrator {
   int _contextFieldIndex = 0;
   bool _awaitingEducationQuestion = false;
 
+  /// The last event this turn actually persisted via [_store], or null if
+  /// nothing was stored yet this turn — lets main.dart link a resolved
+  /// Timeline hypothesis to the real event once it finishes being logged
+  /// (see `_hypothesisAwaitingEventLink`), without threading an id through
+  /// every [OrchestratorReply].
+  EventInstance? get lastStoredEvent => _lastStoredEvent;
+  EventInstance? _lastStoredEvent;
+
   String _emergencyReason = '';
   final Map<String, dynamic> _emergencyData = {};
   ProfileContext? _profileContext;
@@ -144,6 +167,7 @@ class ConversationOrchestrator {
     SemanticInterpreter? interpreter, {
     Uint8List? audioBytes,
     List<String> recentContext = const [],
+    DateTime? seedEventCreatedAt,
   }) async {
     if (_state == DiabAIGlobalState.onboarding) {
       return _onboardingReply(await _initializationModule.respond(rawText));
@@ -201,9 +225,44 @@ class ConversationOrchestrator {
     _state = DiabAIGlobalState.parsing;
     await _parseAndPushEvents(rawText, interpreter,
         audioBytes: audioBytes, recentContext: recentContext);
+    if (seedEventCreatedAt != null && _eventStack.isNotEmpty) {
+      final seededEvent = _eventStack.first;
+      seededEvent.createdAt = seedEventCreatedAt;
+      // A hypothesis is always about something that already happened —
+      // "planejando essa refeição?" would be nonsensical here.
+      if (seededEvent.type == EventType.meal) {
+        seededEvent.data['mealStatus'] = 'alreadyEaten';
+      }
+    }
     if (_awaitingEducationQuestion) {
       return const OrchestratorReply('Qual é sua dúvida?');
     }
+    return _resolveStack();
+  }
+
+  /// Confirms a Timeline hypothesis directly as an [type] event, bypassing
+  /// the semantic parser entirely — the type is already known (the
+  /// hypothesis classified it), so there is nothing left for the on-device
+  /// LLM to (re-)interpret. A synthetic phrase like "Apliquei insulina" fed
+  /// back through [respond] risked the model landing below
+  /// [SemanticInterpreter.minimumConfidence] and falling back to a
+  /// "não consegui interpretar" reply instead of confirming the event. See
+  /// docs/fsm/past_event_interpreter.mmd's `CONFIRM` node.
+  Future<OrchestratorReply> confirmHypothesisEvent(
+    EventType type, {
+    required DateTime occurredAt,
+  }) async {
+    final event = EventInstance(
+      type: type,
+      createdAt: occurredAt,
+      source: EventSource.quickReply,
+    );
+    // A hypothesis is always about something that already happened —
+    // "planejando essa refeição?" would be nonsensical here.
+    if (type == EventType.meal) {
+      event.data['mealStatus'] = 'alreadyEaten';
+    }
+    _eventStack.add(event);
     return _resolveStack();
   }
 
@@ -228,10 +287,22 @@ class ConversationOrchestrator {
       guidedFieldKind:
           _initializationModule.isComplete ? null : reply.kind,
       guidedModuleId: _initializationModule.isComplete ? null : 'onboarding',
+      guidedShortTitle:
+          _initializationModule.isComplete ? null : reply.shortTitle,
       unitOptions:
           _initializationModule.isComplete ? const [] : reply.unitOptions,
       obscureNextAnswer: reply.obscureNextAnswer,
     );
+  }
+
+  /// Re-enters the CGM connection sub-step after onboarding already
+  /// finished \u2014 used by the post-onboarding "could not connect" screen's
+  /// "Tentar conectar de novo" action (see docs/fsm/cgm.mmd). Requires
+  /// [beginOnboarding] to have run earlier this session.
+  Future<OrchestratorReply> retryCgmConnection() async {
+    _state = DiabAIGlobalState.onboarding;
+    final reply = await _initializationModule.retryCgmConnection();
+    return _onboardingReply(reply);
   }
 
   Future<void> _parseAndPushEvents(
@@ -356,6 +427,7 @@ class ConversationOrchestrator {
         numericInputHint: reply.numericInputHint,
         guidedFieldKind: reply.guidedFieldKind,
         guidedModuleId: reply.guidedModuleId,
+        guidedEventCreatedAt: reply.guidedEventCreatedAt,
       );
     }
 
@@ -464,6 +536,7 @@ class ConversationOrchestrator {
       numericInputHint: field.numericInputHint,
       guidedFieldKind: field.kind,
       guidedModuleId: active.type.name,
+      guidedEventCreatedAt: field.kind == FieldKind.time ? active.createdAt : null,
     );
   }
 
@@ -509,6 +582,7 @@ class ConversationOrchestrator {
       numericInputHint: next.numericInputHint,
       guidedFieldKind: next.guidedFieldKind,
       guidedModuleId: next.guidedModuleId,
+      guidedEventCreatedAt: next.guidedEventCreatedAt,
     );
   }
 
@@ -589,6 +663,21 @@ class ConversationOrchestrator {
     final guidance = _emergencyGuidanceMessage();
     _emergencyData.clear();
     _state = DiabAIGlobalState.resuming;
+
+    // The mandatory time-confirmation field (`eventTimeField`) would
+    // otherwise force one more separate user turn right after this crisis
+    // Q&A — and since that reply re-enters `respond()`'s top-level
+    // `_pendingFieldKey` branch, it would call `_resolveStack` (not
+    // `_continueAfter`) and re-run the emergency gate against the very
+    // same still-unresolved reading, escalating a second time. At most a
+    // few seconds have passed since the reading was reported, so it's
+    // resolved as "now" here instead of asking again.
+    for (final event in _eventStack) {
+      event.data.putIfAbsent(
+        eventTimeField.key,
+        () => DateTime.now().toIso8601String(),
+      );
+    }
 
     if (_eventStack.isEmpty && _pendingFieldKey == null) {
       _state = DiabAIGlobalState.idle;
@@ -706,6 +795,7 @@ class ConversationOrchestrator {
   // --- Pending-field parsing (deterministic, never the LLM) ------------
 
   FieldSpec? _findFieldSpec(EventType type, String key) {
+    if (key == eventTimeField.key) return eventTimeField;
     final specs = eventDefinitions[type];
     if (specs == null) return null;
     for (final spec in specs) {
@@ -725,6 +815,10 @@ class ConversationOrchestrator {
     final value = _parseFieldValue(spec, rawText);
     if (value == null) return false;
     event.data[fieldKey] = value;
+    if (spec.kind == FieldKind.time) {
+      final parsed = DateTime.tryParse(value as String);
+      if (parsed != null) event.createdAt = parsed;
+    }
     return true;
   }
 
@@ -739,12 +833,38 @@ class ConversationOrchestrator {
       case FieldKind.freeText:
         final trimmed = rawText.trim();
         return trimmed.isEmpty ? null : trimmed;
+      case FieldKind.time:
+        return _parseEventTime(rawText)?.toIso8601String();
     }
+  }
+
+  /// Accepts the `Agora` quick reply, an ISO-8601 datetime string (sent by
+  /// the guided panel's time picker), or a typed `HH:mm` — rolled back to
+  /// yesterday if that time-of-day hasn't happened yet today. Returns null
+  /// for anything else, so [_tryFillPendingField] keeps re-asking.
+  DateTime? _parseEventTime(String rawText) {
+    final trimmed = rawText.trim();
+    if (trimmed.isEmpty) return null;
+    if (trimmed.toLowerCase() == 'agora') return DateTime.now();
+    final iso = DateTime.tryParse(trimmed);
+    if (iso != null) return iso;
+    final match = RegExp(r'^(\d{1,2}):(\d{2})$').firstMatch(trimmed);
+    if (match == null) return null;
+    final hour = int.parse(match.group(1)!);
+    final minute = int.parse(match.group(2)!);
+    if (hour > 23 || minute > 59) return null;
+    final now = DateTime.now();
+    var candidate = DateTime(now.year, now.month, now.day, hour, minute);
+    if (candidate.isAfter(now)) {
+      candidate = candidate.subtract(const Duration(days: 1));
+    }
+    return candidate;
   }
 
   Future<void> _store(EventInstance event) async {
     await storeGateway?.storeEvent(event);
     await _transition(event, EventStatus.stored);
+    _lastStoredEvent = event;
   }
 
   Future<void> _markStackEscalated(String reason) async {

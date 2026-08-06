@@ -50,7 +50,7 @@ enum DiabAIGlobalState {
 
 /// How a [FieldSpec]'s answer should be parsed. The FSM only ever branches
 /// on this (generic) shape, never on which event the field belongs to.
-enum FieldKind { yesNo, number, option, freeText }
+enum FieldKind { yesNo, number, option, freeText, time }
 
 /// Where an event entered the kernel. Sources are evidence, not states.
 enum EventSource {
@@ -659,7 +659,13 @@ class EventInstance {
   final String id;
   final EventType type;
   final Map<String, dynamic> data;
-  final DateTime createdAt;
+
+  /// Defaults to the moment the event was created, but is overwritten once
+  /// the user confirms the real clock time via [eventTimeField] — see
+  /// [KnowledgeEngine.missingFields] and orchestrator.dart's handling of
+  /// `FieldKind.time`. Never left ambiguous: every event that reaches
+  /// storage has an explicit, user-confirmed timestamp.
+  DateTime createdAt;
   final EventSource source;
 
   /// How certain the kernel is in this event's data, 0..1. User-entered and
@@ -837,6 +843,14 @@ final Map<EventType, List<FieldSpec>> eventDefinitions = {
         'rotina': 'basal-rotina',
       },
       priority: 2,
+    ),
+    FieldSpec(
+      key: 'actionDurationHours',
+      question: 'Por quantas horas você espera que essa dose continue agindo '
+          '(duração de ação)?',
+      kind: FieldKind.number,
+      numericInputHint: 'Duração de ação (horas)',
+      priority: 3,
     ),
   ],
   EventType.meal: const [
@@ -1052,6 +1066,21 @@ final Map<EventType, List<FieldSpec>> eventDefinitions = {
   // unknown are resolved outside the missing-field machinery).
 };
 
+/// Asked FIRST for every event type that has its own [eventDefinitions]
+/// entry (see [KnowledgeEngine.missingFields]), before any type-specific
+/// field — an event never silently keeps "whenever it was typed" as its
+/// real time. `Agora` resolves immediately; any other answer opens a real
+/// time picker (docs/fsm/event_time.mmd). Generic over every event type,
+/// exactly like [eventContextFields] below, so no event-specific state is
+/// introduced for it.
+const eventTimeField = FieldSpec(
+  key: 'occurredAt',
+  question: 'Isso aconteceu agora ou em outro horário?',
+  kind: FieldKind.time,
+  quickReplies: ['Agora'],
+  priority: -1,
+);
+
 const List<FieldSpec> eventContextFields = [
   FieldSpec(
     key: 'occurredWhen',
@@ -1123,7 +1152,11 @@ class SuggestionEngine {
 class KnowledgeEngine {
   static List<FieldSpec> missingFields(
       EventType type, Map<String, dynamic> known) {
-    final specs = eventDefinitions[type] ?? const <FieldSpec>[];
+    final typeSpecs = eventDefinitions[type];
+    if (typeSpecs == null) return const <FieldSpec>[];
+    // The real clock time is asked before any type-specific field, for
+    // every event type that has fields at all — see [eventTimeField].
+    final specs = [eventTimeField, ...typeSpecs];
     final missing = <FieldSpec>[];
     for (final spec in specs) {
       final dependsOn = spec.dependsOn;
@@ -1155,6 +1188,7 @@ class ValidationEngine {
       'carbsGrams',
       'plannedCarbsGrams',
       'duration',
+      'actionDurationHours',
     ]) {
       final value = event.data[key];
       if (value is num && (!value.isFinite || value < 0)) {
@@ -1586,3 +1620,54 @@ final Map<EventType, String Function(Map<String, dynamic> data)>
         'profissional.';
   },
 };
+
+/// Describes an already-stored event for review (Timeline tap on an
+/// already-resolved hypothesis marker \u2014 see
+/// docs/fsm/past_event_interpreter.mmd), as a statement of what was
+/// recorded rather than a fresh completion message. Only meal/insulin/
+/// exercise are ever linked to a hypothesis (see
+/// `_syntheticConfirmationText` in main.dart), so only those three have a
+/// dedicated phrasing; any other type falls back to a generic sentence.
+String describeLoggedEvent(
+  EventType type,
+  Map<String, dynamic> data,
+  DateTime occurredAt,
+) {
+  final time = '${occurredAt.hour.toString().padLeft(2, '0')}:'
+      '${occurredAt.minute.toString().padLeft(2, '0')}';
+  switch (type) {
+    case EventType.meal:
+      final isPlanned = data['mealStatus'] == 'planned';
+      final food =
+          (isPlanned ? data['plannedFoods'] : data['foodDetails']) as String?;
+      final grams =
+          asDouble(isPlanned ? data['plannedCarbsGrams'] : data['carbsGrams']);
+      final foodPart = food != null ? ' ($food)' : '';
+      final gramsPart =
+          grams != null ? ' com ${formatNumber(grams)}g de carboidratos' : '';
+      return 'Às $time você registrou uma refeição$foodPart$gramsPart.';
+    case EventType.insulin:
+      final dose = asDouble(data['dose']);
+      final insulinType = data['insulinType'] as String?;
+      final duration = asDouble(data['actionDurationHours']);
+      final durationPart = duration != null
+          ? ', com ação estimada de ${formatNumber(duration)}h'
+          : '';
+      return 'Às $time você aplicou '
+          '${dose != null ? '${formatNumber(dose)} unidades ' : ''}'
+          '${insulinType != null ? 'de $insulinType' : 'de insulina'}'
+          '$durationPart.';
+    case EventType.exercise:
+      final intensity = data['intensity'] as String?;
+      final activityType = data['activityType'] as String?;
+      final duration = asDouble(data['duration']);
+      final activityPart = activityType != null ? ' ($activityType)' : '';
+      final intensityPart = intensity != null ? ' $intensity' : '';
+      final durationPart =
+          duration != null ? ' por ${formatNumber(duration)} minutos' : '';
+      return 'Às $time você fez uma atividade física$intensityPart'
+          '$activityPart$durationPart.';
+    default:
+      return 'Às $time este evento foi registrado.';
+  }
+}

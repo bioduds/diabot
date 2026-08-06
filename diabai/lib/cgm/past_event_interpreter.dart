@@ -50,20 +50,45 @@ class EventHypothesis {
     required this.type,
     required this.estimatedStart,
     required this.estimatedPeak,
+    required this.effectWindowEnd,
     required this.confidence,
     required this.magnitude,
     required this.explanation,
     required this.evidence,
     required this.status,
+    this.linkedEventId,
   });
 
-  /// Stable identifier, derived from [estimatedPeak] so recomputing the
-  /// analysis over the same window updates the same row instead of
-  /// duplicating it \u2014 see [PastEventInterpreter._idFor].
+  /// Stable identifier, derived from the *first* reading that started
+  /// this hypothesis thread (see [PastEventInterpreter._mergeCluster]), so
+  /// recomputing the analysis over a growing window keeps updating the
+  /// same row \u2014 confidence rising or new evidence arriving never spawns
+  /// a duplicate \u2014 instead of creating a new one every time a later,
+  /// more-confident reading of the same ongoing phenomenon is observed.
+  /// See [PastEventInterpreter._idFor].
   final String id;
   final HypothesisType type;
+
+  /// CauseTime: when the underlying physiological cause (meal, insulin,
+  /// exercise, ...) most likely began, pushed back from [estimatedPeak]
+  /// by [PastEventInterpreter._causeLatencyFor] — always at or before
+  /// [estimatedPeak], never after.
   final DateTime estimatedStart;
+
+  /// DetectionTime: the exact reading whose residual first crossed the
+  /// significance threshold and produced this hypothesis (or, once
+  /// merged into a thread, the most recent such reading — see
+  /// [PastEventInterpreter._mergeCluster]).
   final DateTime estimatedPeak;
+
+  /// EffectWindow end: how long after [estimatedPeak] this cause type's
+  /// physiological effect can still plausibly explain new divergence,
+  /// from [PastEventInterpreter._effectDurationFor]. New evidence of the
+  /// same type arriving at or before this time is threaded into this
+  /// same hypothesis (see [PastEventInterpreter._dedupe]) instead of
+  /// starting a new one; evidence arriving after it starts a fresh
+  /// episode, since the original cause can no longer explain it.
+  final DateTime effectWindowEnd;
 
   /// 0..1 heuristic confidence that this hypothesis is correct.
   final double confidence;
@@ -85,17 +110,27 @@ class EventHypothesis {
 
   final HypothesisStatus status;
 
+  /// [EventInstance.id] of the meal/insulin/exercise event this hypothesis
+  /// resolved to once the user confirmed/corrected it (see main.dart's
+  /// `_hypothesisAwaitingEventLink`) — null until then, and always null for
+  /// dawnPhenomenon/stress, which never create a linked event. Lets
+  /// re-tapping an already-resolved marker describe the real stored data
+  /// instead of asking Sim/Corrigir/Ignorar again.
+  final String? linkedEventId;
+
   EventHypothesis copyWith({HypothesisType? type, HypothesisStatus? status}) {
     return EventHypothesis(
       id: id,
       type: type ?? this.type,
       estimatedStart: estimatedStart,
       estimatedPeak: estimatedPeak,
+      effectWindowEnd: effectWindowEnd,
       confidence: confidence,
       magnitude: magnitude,
       explanation: explanation,
       evidence: evidence,
       status: status ?? this.status,
+      linkedEventId: linkedEventId,
     );
   }
 }
@@ -109,6 +144,16 @@ abstract class HypothesisGateway {
   /// status the user already resolved (confirmed/corrected/dismissed).
   Future<void> upsertHypothesisIfAbsent(EventHypothesis hypothesis);
 
+  /// Updates the stored row matching [hypothesis].id's evidence/confidence
+  /// /peak/explanation in place, but only while it is still
+  /// [HypothesisStatus.pending] — this is how an ongoing hypothesis
+  /// thread (see [PastEventInterpreter._dedupe]) keeps evolving across
+  /// repeated analysis runs without ever touching a row the user already
+  /// confirmed/corrected/dismissed. Returns true if a pending row was
+  /// found and updated, false otherwise (including "id not found yet",
+  /// which callers should treat as "insert it instead").
+  Future<bool> refreshPendingHypothesis(EventHypothesis hypothesis);
+
   /// Updates an existing hypothesis's status (and, on correction, its
   /// type) \u2014 never touches [EventHypothesis.evidence]/explanation.
   Future<void> updateHypothesisStatus(
@@ -117,12 +162,33 @@ abstract class HypothesisGateway {
     HypothesisType? type,
   });
 
+  /// Records which stored event a resolved hypothesis turned into, once
+  /// that event actually finishes being logged (may be several turns after
+  /// [updateHypothesisStatus] set its status — see main.dart's
+  /// `_hypothesisAwaitingEventLink`).
+  Future<void> linkHypothesisToEvent(String id, String eventId);
+
+  // Realigns a resolved hypothesis's own estimatedStart/effectWindowEnd to
+  // the time the user actually confirmed via the curve time picker (which
+  // may differ from the original detection-time-derived guess) — see
+  // main.dart's post-correction linking, request #1 (glucose_time_picker's
+  // drag-on-the-curve dialog). effectWindowEnd shifts by the same delta so
+  // its own duration is preserved.
+  Future<void> realignHypothesisTiming(String id, DateTime estimatedStart);
+
   /// Hypotheses whose [EventHypothesis.estimatedPeak] falls in [start]..
   /// [end], oldest first \u2014 what the Timeline renders as chart markers.
   Future<List<EventHypothesis>> hypothesesInWindow(
     DateTime start,
     DateTime end,
   );
+
+  /// Deletes any other still-[HypothesisStatus.pending] row of the same
+  /// type whose estimatedPeak falls inside [merged]'s own causal span —
+  /// cleans up stale duplicate rows left behind by candidates that
+  /// [PastEventInterpreter._dedupe] now folds into this single thread, so
+  /// every hypothesis type merges the same way (not just meal).
+  Future<void> prunePendingDuplicates(EventHypothesis merged);
 }
 
 /// Observes the Kalman estimator's residual stream and interprets
@@ -136,7 +202,6 @@ class PastEventInterpreter {
     this.residualThresholdMgdl = 10,
     this.minConfidence = 0.55,
     this.suppressionWindow = const Duration(minutes: 20),
-    this.dedupeWindow = const Duration(minutes: 15),
     this.dawnWindowStartHour = 4,
     this.dawnWindowEndHour = 8,
     this.risingVelocityThreshold = 0.6,
@@ -157,11 +222,6 @@ class PastEventInterpreter {
   /// residual suppresses a hypothesis (it is already explained).
   final Duration suppressionWindow;
 
-  /// Adjacent hypotheses of the same type within this window are merged,
-  /// keeping only the highest-confidence one \u2014 a sustained divergence
-  /// otherwise re-triggers on every reading that crosses the threshold.
-  final Duration dedupeWindow;
-
   final int dawnWindowStartHour;
   final int dawnWindowEndHour;
 
@@ -170,6 +230,51 @@ class PastEventInterpreter {
   final double dawnVelocityCeiling;
   final double stressAccelerationThreshold;
   final double stressVelocityCeiling;
+
+  /// How long before detection this cause type's effect is typically
+  /// still latent/invisible — used to push [EventHypothesis.estimatedStart]
+  /// (CauseTime) back from the reading that actually crossed the residual
+  /// threshold (DetectionTime). Heuristic magnitudes only, not a dosing or
+  /// clinical parameter: meal/insulin onset takes a few minutes to show up
+  /// in interstitial glucose; exercise and stress are visible almost
+  /// immediately; dawn phenomenon has no discrete external cause to place
+  /// earlier than its own gradual onset.
+  Duration _causeLatencyFor(HypothesisType type) {
+    switch (type) {
+      case HypothesisType.meal:
+      case HypothesisType.insulin:
+        return const Duration(minutes: 15);
+      case HypothesisType.exercise:
+      case HypothesisType.stress:
+        return const Duration(minutes: 5);
+      case HypothesisType.dawnPhenomenon:
+        return Duration.zero;
+    }
+  }
+
+  /// How long this cause type's physiological effect can still plausibly
+  /// explain new divergence after a reading that reinforced it — the
+  /// EffectWindow used by [_dedupe] to thread later evidence into the same
+  /// hypothesis instead of starting a new one (see [_mergeCluster]).
+  /// Heuristic magnitudes only: roughly the typical postprandial glucose
+  /// excursion for a meal, the app's own rapid-acting insulin action
+  /// duration default for insulin, a couple of hours for exercise
+  /// (including delayed effects), the dawn window's own span for dawn
+  /// phenomenon, and a shorter, less-defined window for stress.
+  Duration _effectDurationFor(HypothesisType type) {
+    switch (type) {
+      case HypothesisType.meal:
+        return const Duration(minutes: 180);
+      case HypothesisType.insulin:
+        return const Duration(minutes: 240);
+      case HypothesisType.exercise:
+        return const Duration(minutes: 120);
+      case HypothesisType.dawnPhenomenon:
+        return Duration(hours: dawnWindowEndHour - dawnWindowStartHour);
+      case HypothesisType.stress:
+        return const Duration(minutes: 90);
+    }
+  }
 
   /// Runs the analysis over parallel [samples]/[estimates] lists (same
   /// length, same order as produced by the chart's own estimate series)
@@ -245,14 +350,16 @@ class PastEventInterpreter {
       if (attribution.confidence < minConfidence) continue;
 
       final type = _toHypothesisType(attribution.type);
+      final estimatedStart = at.subtract(_causeLatencyFor(type));
       raw.add(EventHypothesis(
         id: _idFor(at),
         type: type,
-        estimatedStart: at.subtract(const Duration(minutes: 5)),
+        estimatedStart: estimatedStart,
         estimatedPeak: at,
+        effectWindowEnd: at.add(_effectDurationFor(type)),
         confidence: attribution.confidence,
         magnitude: residual,
-        explanation: _explanationFor(type, at, residual),
+        explanation: _explanationFor(type, estimatedStart),
         evidence: {
           'residual': residual,
           'velocity': velocity,
@@ -317,47 +424,97 @@ class PastEventInterpreter {
     return 'hyp_$bucket';
   }
 
-  String _explanationFor(HypothesisType type, DateTime at, double residual) {
-    final time = '${at.hour.toString().padLeft(2, '0')}:'
-        '${at.minute.toString().padLeft(2, '0')}';
+  /// Succinct, single-line phrasing per request #3 — names only the
+  /// probable start (CauseTime, [EventHypothesis.estimatedStart]) instead
+  /// of the detection time, and asks the type as a short question instead
+  /// of narrating the raw signal ("Ainda observo..."); an ongoing thread
+  /// (see [_mergeCluster]) reuses this same template unchanged, since the
+  /// CauseTime it names never moves once a thread starts.
+  String _explanationFor(HypothesisType type, DateTime start) {
+    final time = _formatTime(start);
     switch (type) {
       case HypothesisType.meal:
-        return 'Observei uma subida rápida por volta das $time, maior do '
-            'que o esperado. Pode ter sido uma refeição.';
+        return '$time: Início de subida rápida de glicemia. Refeição?';
       case HypothesisType.insulin:
-        return 'Observei uma queda rápida por volta das $time, maior do '
-            'que o esperado. Pode ter sido insulina agindo.';
+        return '$time: Início de queda rápida de glicemia. Insulina?';
       case HypothesisType.exercise:
-        return 'Observei uma queda por volta das $time, coincidindo com um '
-            'exercício recente. Pode ter sido esforço físico.';
+        return '$time: Início de queda de glicemia, coincidindo com '
+            'exercício recente. Exercício?';
       case HypothesisType.dawnPhenomenon:
-        return 'Observei uma subida gradual durante a madrugada, por volta '
-            'das $time. Pode ser o fenômeno do amanhecer.';
+        return '$time: Início de subida gradual de glicemia. Fenômeno do '
+            'amanhecer?';
       case HypothesisType.stress:
-        return 'Observei uma variação irregular por volta das $time, sem '
-            'uma causa clara nos registros. Pode ter sido estresse.';
+        return '$time: Início de variação irregular de glicemia. Estresse?';
     }
   }
 
+  String _formatTime(DateTime at) {
+    return '${at.hour.toString().padLeft(2, '0')}:'
+        '${at.minute.toString().padLeft(2, '0')}';
+  }
+
+  /// Threads each candidate into the most recent same-type cluster whose
+  /// EffectWindow ([EventHypothesis.effectWindowEnd]) it still falls
+  /// within, instead of matching against a single confidence-weighted
+  /// "winner" or a flat time window \u2014 this is what lets a slow, sustained
+  /// divergence (see the module doc comment) be tracked as one hypothesis
+  /// whose confidence/duration/effect window evolve, rather than
+  /// restarting the window every time a higher- or lower-confidence
+  /// reading arrives, or splitting a still-explained meal/insulin episode
+  /// just because two readings happen to be more than a few minutes apart.
   List<EventHypothesis> _dedupe(List<EventHypothesis> hypotheses) {
     final sorted = [...hypotheses]
       ..sort((a, b) => a.estimatedPeak.compareTo(b.estimatedPeak));
-    final result = <EventHypothesis>[];
+    final clusters = <List<EventHypothesis>>[];
     for (final hypothesis in sorted) {
-      final clusterIndex = result.lastIndexWhere((existing) =>
-          existing.type == hypothesis.type &&
-          hypothesis.estimatedPeak
-                  .difference(existing.estimatedPeak)
-                  .abs() <=
-              dedupeWindow);
+      final clusterIndex = clusters.lastIndexWhere((cluster) =>
+          cluster.last.type == hypothesis.type &&
+          !hypothesis.estimatedPeak.isAfter(cluster.last.effectWindowEnd));
       if (clusterIndex == -1) {
-        result.add(hypothesis);
-        continue;
-      }
-      if (hypothesis.confidence > result[clusterIndex].confidence) {
-        result[clusterIndex] = hypothesis;
+        clusters.add([hypothesis]);
+      } else {
+        clusters[clusterIndex].add(hypothesis);
       }
     }
-    return result;
+    return [for (final cluster in clusters) _mergeCluster(cluster)];
+  }
+
+  /// Collapses one thread of same-type, temporally-continuous candidates
+  /// into a single [EventHypothesis] that keeps the *first* candidate's
+  /// id/[EventHypothesis.estimatedStart] (so its identity — and therefore
+  /// its stored row — never changes across repeated analysis runs, see
+  /// [PastEventInterpreter.analyze]'s doc comment and
+  /// `HypothesisGateway.refreshPendingHypothesis`), the *last* candidate's
+  /// estimatedPeak/effectWindowEnd/magnitude/evidence (the most recent
+  /// observation of the same phenomenon, and how much further it still
+  /// extends the episode's EffectWindow), and the highest confidence
+  /// observed so far.
+  EventHypothesis _mergeCluster(List<EventHypothesis> cluster) {
+    if (cluster.length == 1) return cluster.single;
+    final first = cluster.first;
+    final last = cluster.last;
+    var peakConfidence = first.confidence;
+    for (final hypothesis in cluster) {
+      if (hypothesis.confidence > peakConfidence) {
+        peakConfidence = hypothesis.confidence;
+      }
+    }
+    return EventHypothesis(
+      id: first.id,
+      type: last.type,
+      estimatedStart: first.estimatedStart,
+      estimatedPeak: last.estimatedPeak,
+      effectWindowEnd: last.effectWindowEnd,
+      confidence: peakConfidence,
+      magnitude: last.magnitude,
+      explanation: _explanationFor(last.type, first.estimatedStart),
+      evidence: {
+        ...last.evidence,
+        'firstObservedAt': first.estimatedStart.toIso8601String(),
+        'observationCount': cluster.length,
+      },
+      status: HypothesisStatus.pending,
+    );
   }
 }
+

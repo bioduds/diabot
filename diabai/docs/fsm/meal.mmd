@@ -1,7 +1,8 @@
 %% fsm-contract: {"eventType":"meal","fields":["mealStatus","carbsKnown","carbsGrams","foodDetailsOptIn","foodDetails","plannedFoods","plannedCarbsKnown","plannedCarbsGrams"],"recordedPath":["mealStatus=alreadyEaten","carbsKnown","carbsGrams?","foodDetailsOptIn","foodDetails?","optional-context","stored"],"plannedPath":["mealStatus=planned","plannedFoods","plannedCarbsKnown","plannedCarbsGrams?","optional-context","stored"],"globalStateChange":false,"lifecycleChange":false,"emergencyImpact":false,"priorityImpact":false,"medicalReasoning":false,"insulinDoseCalculation":false}
 %% This contract is checked by test/fsm_mermaid_contract_test.dart.
 flowchart TD
-  INPUT[Meal event from user or parser] --> STATUS{Has the user already eaten?}
+  INPUT[Meal event from user or parser] --> TIME[Ask if it happened now or at another time]
+  TIME --> STATUS{Has the user already eaten?}
 
   STATUS -->|alreadyEaten| CARBS_KNOWN{Carbohydrates known?}
   CARBS_KNOWN -->|yes| CARBS[Record stated carbohydrate grams]
@@ -21,3 +22,4 @@ flowchart TD
   PLANNED_CONTEXT --> STORE
 
   NOTE[Generic missing-field collection only: no new DiabAIGlobalState, EventStatus, emergency or priority rule, insulin-dose calculation, or medical recommendation]
+  TIME_NOTE[occurredAt/TIME is the shared eventTimeField (see events.dart), prepended generically by KnowledgeEngine.missingFields ahead of every event type's own fields \u2014 not part of the fields list above and not meal-specific, so it's intentionally left out of the enforced fsm-contract JSON. Answering it also confirms/overwrites EventInstance.createdAt with the real clock time before storage.]

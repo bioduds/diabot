@@ -186,6 +186,27 @@ String normalizeWeightAnswer(String rawAnswer) {
   return '$display kg';
 }
 
+/// Best-effort normalization of a free-typed diagnosis-duration answer
+/// ("3", "3 anos", "6 meses", "10 dias") into a single canonical
+/// "N <unit>" string, mirroring [normalizeWeightAnswer]. Defaults to
+/// "anos" when no unit word is present, since that is the most common case.
+String normalizeDurationAnswer(String rawAnswer) {
+  final normalized = rawAnswer.trim().toLowerCase();
+  final numberMatch = RegExp(r'-?\d+(?:[.,]\d+)?').firstMatch(normalized);
+  if (numberMatch == null) return rawAnswer.trim();
+  final number = double.tryParse(numberMatch.group(0)!.replaceAll(',', '.'));
+  if (number == null) return rawAnswer.trim();
+
+  final unit = normalized.contains('mes')
+      ? 'meses'
+      : normalized.contains('dia')
+          ? 'dias'
+          : 'anos';
+  final display =
+      number == number.roundToDouble() ? number.toInt().toString() : number.toString();
+  return '$display $unit';
+}
+
 /// One scripted onboarding question, mapping directly to a [UserProfile] field.
 class OnboardingQuestion {
   final String field;
@@ -201,11 +222,17 @@ class OnboardingQuestion {
   /// a [FieldKind.number] question. Empty when the question has no units.
   final List<String> unitOptions;
 
+  /// Short label (e.g. "Peso", "Tipo de Diabetes") shown in the guided
+  /// panel's header instead of the generic "Perfil inicial" module title,
+  /// for every screen of the first-login initialization flow.
+  final String shortTitle;
+
   const OnboardingQuestion({
     required this.field,
     required this.question,
     required this.getter,
     required this.setter,
+    required this.shortTitle,
     this.kind = FieldKind.freeText,
     this.numericInputHint,
     this.unitOptions = const [],
@@ -225,12 +252,14 @@ final List<OnboardingQuestion> onboardingQuestions = [
         'Isso ajuda o reconhecimento de voz a te entender melhor.',
     getter: (p) => p.idioma,
     setter: (p, v) => p.idioma = normalizeLanguageAnswer(v),
+    shortTitle: 'Idioma',
   ),
   OnboardingQuestion(
     field: 'nome',
     question: 'Olá! Antes de começarmos, como você gostaria de ser chamado(a)?',
     getter: (p) => p.nome,
     setter: (p, v) => p.nome = v,
+    shortTitle: 'Nome',
   ),
   OnboardingQuestion(
     field: 'peso',
@@ -240,6 +269,7 @@ final List<OnboardingQuestion> onboardingQuestions = [
     kind: FieldKind.number,
     numericInputHint: 'Peso',
     unitOptions: const ['kg', 'lb'],
+    shortTitle: 'Peso',
   ),
   OnboardingQuestion(
     field: 'tipoDiabetes',
@@ -247,13 +277,18 @@ final List<OnboardingQuestion> onboardingQuestions = [
         'Qual o tipo de diabetes você tem (Tipo 1, Tipo 2, Gestacional, outro)?',
     getter: (p) => p.tipoDiabetes,
     setter: (p, v) => p.tipoDiabetes = v,
+    shortTitle: 'Tipo de Diabetes',
   ),
   OnboardingQuestion(
     field: 'tempoDiagnostico',
     question:
         'Há quanto tempo você tem diabetes (ex: 3 anos, recém diagnosticado)?',
     getter: (p) => p.tempoDiagnostico,
-    setter: (p, v) => p.tempoDiagnostico = v,
+    setter: (p, v) => p.tempoDiagnostico = normalizeDurationAnswer(v),
+    kind: FieldKind.number,
+    numericInputHint: 'Tempo de diagnóstico',
+    unitOptions: const ['Anos', 'Meses', 'Dias'],
+    shortTitle: 'Tempo de Diagnóstico',
   ),
   OnboardingQuestion(
     field: 'insulinas',
@@ -261,5 +296,6 @@ final List<OnboardingQuestion> onboardingQuestions = [
         'Quais insulinas você utiliza atualmente (basal e/ou bolus, se souber os nomes)?',
     getter: (p) => p.insulinas,
     setter: (p, v) => p.insulinas = v,
+    shortTitle: 'Insulinas',
   ),
 ];
